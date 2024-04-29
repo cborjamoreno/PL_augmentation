@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+Sebens_MA_LTM/
+
 # C extensions
 *.so
 
