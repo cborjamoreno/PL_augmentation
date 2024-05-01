@@ -282,12 +282,20 @@ class LabelExpander(ABC):
                 print(f"Image {image_name} in image directory but not in .csv")
 
     def expand_images(self):
+        # Get number of unique labels
+        unique_labels_str = self.input_df['Label'].unique()
+        print('Number of unique labels:', len(unique_labels_str))
+
         for image_name in self.image_names_csv:
             image_path = os.path.join(self.image_dir, image_name + '.jpg')
             image = cv2.imread(image_path)
 
             if image is None:
                 continue
+
+            # reset gt_points and gt_labels
+            self.gt_points = np.array([])
+            self.gt_labels = np.array([])
 
             # crop the image 200 pixels from each side
             cropped_image = image[200:image.shape[0]-200, 200:image.shape[1]-200]
@@ -312,6 +320,27 @@ class LabelExpander(ABC):
             image_df = self.expand_labels(points, labels, unique_labels_str, image, cropped_image, image_name)
             
             generate_image(image_df, image, self.gt_points, self.gt_labels, color_dict, image_name, output_dir)
+
+            # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
+            mask = np.zeros((image.shape[0], image.shape[1]), dtype=float)
+
+            point_labels = {}
+            for i in range(1, len(unique_labels_str)+1):
+                expanded_i = image_df[image_df['Label'] == unique_labels_str[i-1]].iloc[:, 1:3].to_numpy().astype(int) + 200
+                for point in expanded_i:
+                    point_tuple = tuple(point)
+                    if point_tuple in point_labels:
+                        # If the point already has a label, set its value in the mask to 0
+                        mask[point[0], point[1]] = 0
+                    else:
+                        # If the point does not have a label, assign the new label and add it to point_labels
+                        mask[point[0], point[1]] = i
+                        point_labels[point_tuple] = unique_labels_str[i-1]
+                
+            # cv2.imshow('Image', mask)
+            # cv2.waitKey(0)
+            # cv2.destroyAllWindows()
+            cv2.imwrite(output_dir+image_name+'_'+unique_labels_str[i-1]+'_mask.png', mask)
         
     @abstractmethod
     def expand_labels(self, points, labels, unique_labels_str, image, cropped_image, image_name):
@@ -332,8 +361,8 @@ class SAMLabelExpander(LabelExpander):
             # print(f"Label {i+1}: {unique_labels_str[i]}")
             # get the points with the label
 
-            # if unique_labels_str[i] != 'DROE':
-            #     continue
+            if unique_labels_str[i] == 'LIT':
+                continue
             
             _points = points[labels==unique_labels_str[i]]
 
@@ -428,7 +457,7 @@ class SAMLabelExpander(LabelExpander):
             new_data_df = pd.DataFrame(data)
 
 
-            generate_image(new_data_df, image, _points_pred, _labels, color_dict, image_name, output_dir, unique_labels_str[i])
+            # generate_image(new_data_df, image, _points_pred, _labels, color_dict, image_name, output_dir, unique_labels_str[i])
             
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)
             # output_df = output_df.concat(new_data_df, ignore_index=True)
