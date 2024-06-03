@@ -14,6 +14,13 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.cluster import KMeans
 from scipy.spatial.distance import cdist
 from abc import ABC, abstractmethod
+from sklearn.neighbors import KernelDensity
+import time
+import multiprocessing as mp
+from tqdm import tqdm 
+
+BORDER_SIZE = 150
+MAX_DISTANCE = 100
 
 def get_key(val, dict):
    
@@ -71,25 +78,109 @@ def blend_translucent_color(img, row, column, color, alpha):
     # Assign the blended color to the pixel
     img[row, column] = blended_color
 
+def kde_subsample(points, bandwidth, subsample_indices):
+    subsample_points = points[subsample_indices]
+    kde = KernelDensity(bandwidth=bandwidth)
+    kde.fit(subsample_points)
+    return kde
+
+# def estimate_density(points, bandwidth=1.0, subsample_rate=0.1, n_jobs=4):
+#     n_points = len(points)
+#     n_subsample = max(1, int(n_points * subsample_rate))
+    
+#     # Randomly sample a subset of indices
+#     subsample_indices = np.random.choice(n_points, n_subsample, replace=False)
+#     subsample_points = points[subsample_indices]
+    
+#     # Split the indices for parallel processing
+#     split_indices = np.array_split(subsample_indices, n_jobs)
+    
+#     # Create a pool of processes
+#     with mp.Pool(n_jobs) as pool:
+#         async_results = []
+#         for split in tqdm(split_indices, desc="Estimating density"):
+#             async_results.append(pool.apply_async(kde_subsample, args=(points, bandwidth, split)))
+        
+#         # Get results from each process
+#         kde_list = [result.get() for result in async_results]
+    
+#     # Aggregate results from each process
+#     start_time = time.time()
+#     densities = np.zeros(n_points)
+#     for kde in kde_list:
+#         densities += np.exp(kde.score_samples(points))
+#     end_time = time.time()
+
+#     print(f"Time taken: {end_time - start_time} seconds")
+    
+#     # Average the densities
+#     densities /= n_jobs
+#     return densities
+
+def estimate_density(points, bandwidth=1.0, subsample_rate=0.1, n_jobs=4):
+    n_points = len(points)
+    n_subsample = max(1, int(n_points * subsample_rate))
+    
+    # Randomly sample a subset of indices
+    subsample_indices = np.random.choice(n_points, n_subsample, replace=False)
+    subsample_points = points[subsample_indices]
+    
+    # Fit KDE on the subsample
+    kde = KernelDensity(bandwidth=bandwidth)
+    kde.fit(subsample_points)
+    
+    # Compute densities for all points
+    start_time = time.time()
+    densities = np.exp(kde.score_samples(points))
+    end_time = time.time()
+
+    print(f"Time taken: {end_time - start_time} seconds")
+    
+    return densities
+
+def adjust_priority(args):
+    label, priorities, image_df, densities, density_factor, max_priority = args
+    label_indices = image_df[image_df['Label'] == label].index
+    label_density = densities[label_indices].mean()  # Average density for the label
+    adjusted_priority = max_priority + 1 - priorities[label] + density_factor * label_density
+    return label, adjusted_priority
+
+def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
+    priorities = image_df['Label'].value_counts()
+    max_priority = priorities.max()
+
+    with mp.Pool(mp.cpu_count()) as pool:
+        args = [(label, priorities, image_df, densities, density_factor, max_priority) for label in priorities.index]
+        label_priorities = dict(pool.map(adjust_priority, tqdm(args, desc="Adjusting priorities")))
+
+    return label_priorities
+
 def generate_image(image_df, image, points, labels, color_dict, image_name, output_dir, label_str=None):
     if label_str is None:
         label_str = 'ALL'
     
     # Create a black image
     black = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-
-    # Create a copy of the image
     black = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2RGB)
+    black = black.astype(float) / 255
+    black = np.dstack((black, np.ones((black.shape[0], black.shape[1])))) # RGBA
 
-    # Convert the image to float type
-    black = black.astype(float)
+    height, width, _ = black.shape
+    dpi = 100  # Change this to adjust the quality of the output image
+    figsize = width / dpi, height / dpi
 
-    black = black / 255
+    plt.figure(figsize=figsize, dpi=dpi)
+    plt.imshow(black)
+    show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
+    plt.axis('off')
 
-    # Convert the image to an RGBA image
-    black = np.dstack((black, np.ones((black.shape[0], black.shape[1]))))
+    if output_dir[-1] != '/':
+        output_dir += '/'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    black2 = black.copy()
+    plt.savefig(output_dir + image_name + '_' + label_str + '_sparse.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close()
 
     # Initialize a dictionary to store the labels of the points
     point_labels = {}
@@ -97,54 +188,99 @@ def generate_image(image_df, image, points, labels, color_dict, image_name, outp
     # Create a dictionary to count the number of labels for each point
     label_counts = {}
 
-    for index, row in image_df.iterrows():
-        point = (row['Row']+200, row['Column']+200)
+    for _, row in image_df.iterrows():
+        point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
         if point in label_counts:
             label_counts[point] += 1
         else:
             label_counts[point] = 1
 
-    # Color the points in the image
-    for index, row in image_df.iterrows():
-        # if row and column are in the image bounds
-        if row['Column'] < black.shape[1] and row['Row'] < black.shape[0]:
-            point = (row['Row']+200, row['Column']+200)
 
-            # If the point has more than one label or has already been labeled, skip coloring
+    # Start the timer
+    start_time = time.time()
+
+    points_array = image_df[['Row', 'Column']].values
+    print('len(points_array):', len(points_array))
+    bandwidth  = 1.0
+    densities = estimate_density(points_array, bandwidth=bandwidth, subsample_rate=0.001, n_jobs=mp.cpu_count())
+    label_priorities = adjust_priorities_with_density(image_df, densities, density_factor=1)
+
+    # Stop the timer
+    end_time = time.time()
+
+    # Calculate the elapsed time
+    elapsed_time = end_time - start_time
+
+    print(f"The estimation of priorities took {elapsed_time} seconds.")
+
+    # Color the points in the image
+    for _, row in image_df.iterrows():
+        if row['Column'] < black.shape[1] and row['Row'] < black.shape[0]:
+            point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
+
+            # If the point has more than one label or has already been labeled, check priorities
             if label_counts[point] > 1 or point in point_labels:
-                continue
+                # If the current label has a higher priority, color the point with the current label
+                if label_priorities.get(row['Label'], 0) > label_priorities.get(point_labels.get(point, None), 0):
+                    # Get the color and add an alpha channel
+                    color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
+                    blend_translucent_color(black, point[0], point[1], color, color[3])
+                    point_labels[point] = row['Label']
+            else:
+                # Get the color and add an alpha channel
+                color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
+                blend_translucent_color(black, point[0], point[1], color, color[3])
+                point_labels[point] = row['Label']
+
+    plt.figure(figsize=figsize, dpi=dpi)
+    plt.imshow(black)
+    show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
+    plt.axis('off')
+
+    plt.savefig(output_dir + image_name + '_' + label_str + '_expanded.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+def generate_image_per_class(image_df, image, points, labels, color_dict, image_name, output_dir, label_str):
+    
+    # Create a black image
+    black = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+    black = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2RGB)
+    black = black.astype(float) / 255
+    black = np.dstack((black, np.ones((black.shape[0], black.shape[1])))) # RGBA
+
+    height, width, _ = black.shape
+    dpi = 100  # Change this to adjust the quality of the output image
+    figsize = width / dpi, height / dpi
+
+    plt.figure(figsize=figsize, dpi=dpi)
+    plt.imshow(black)
+    show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
+    plt.axis('off')
+
+    if output_dir[-1] != '/':
+        output_dir += '/'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    plt.savefig(output_dir + image_name + '_' + label_str + '_sparse.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    # Color the points in the image
+    for _, row in image_df.iterrows():
+        if row['Column'] < black.shape[1] and row['Row'] < black.shape[0]:
+            point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
 
             # Get the color and add an alpha channel
-            color = np.array([color_dict[row['Label']][0]/255.0, color_dict[row['Label']][1]/255.0, color_dict[row['Label']][2]/255.0, 1])
+            color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
             blend_translucent_color(black, point[0], point[1], color, color[3])
 
-            # Store the label of the point
-            point_labels[point] = row['Label']
-
-    plt.figure(figsize=(10,10))
+    plt.figure(figsize=figsize, dpi=dpi)
     plt.imshow(black)
-    show_points(points, labels, plt.gca(), marker_size=100, marker_color='black', edge_color='yellow')
+    show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
     plt.axis('off')
 
-    if output_dir[-1] != '/':
-        output_dir += '/'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    plt.savefig(output_dir+image_name+'_'+label_str+'_expanded.png', bbox_inches='tight', pad_inches=0)
-    # plt.show()
-
-    plt.figure(figsize=(10,10))
-    plt.imshow(black2)
-    show_points(points, labels, plt.gca(), marker_size=100, marker_color='black', edge_color='yellow')
-    plt.axis('off')
-
-    if output_dir[-1] != '/':
-        output_dir += '/'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    plt.savefig(output_dir+image_name+'_'+label_str+'_sparse.png', bbox_inches='tight', pad_inches=0)
-
-    # plt.show()
+    plt.savefig(output_dir + image_name + '_' + label_str + '_expanded.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close()
 
 
 def generate_distinct_colors(n, threshold=50):
@@ -168,7 +304,6 @@ def adjust_colors(colors, n_clusters=15):
     adjusted_colors = kmeans.cluster_centers_[kmeans.labels_]
 
     return adjusted_colors.astype(int)
-
 
 def export_colors(color_dict, output_dir):
     # Export the color_dict to a file
@@ -258,7 +393,7 @@ def plot_mosaic(image, image_labels, results_path):
     plt.show()
 
 class LabelExpander(ABC):
-    def __init__(self, color_dict, input_df, image_dir, output_df, output_dir): 
+    def __init__(self, color_dict, input_df, image_dir, output_df, output_dir, remove_far_points=False, generate_eval_images=False): 
         self.color_dict = color_dict
         self.input_df = input_df
         self.image_dir = image_dir
@@ -268,6 +403,8 @@ class LabelExpander(ABC):
         self.output_df = output_df
         self.gt_points = np.array([])
         self.gt_labels = np.array([])
+        self.remove_far_points = remove_far_points
+        self.generate_eval_images = generate_eval_images
         self.checkMissmatchInFiles()
 
     def checkMissmatchInFiles(self):
@@ -286,100 +423,119 @@ class LabelExpander(ABC):
         unique_labels_str = self.input_df['Label'].unique()
         print('Number of unique labels:', len(unique_labels_str))
 
+        # Get the labels that are in self.color_dict.keys() but not in unique_labels_str
+        extra_labels = set(self.color_dict.keys()) - set(unique_labels_str)
+
+        # Remove these labels from self.color_dict
+        for label in extra_labels:
+            del self.color_dict[label]
+
+        if set(unique_labels_str) != set(self.color_dict.keys()):
+            print('Labels in the .csv file and color_dict do not match')
+            print('Creating a new color_dict')
+
+            # Print the labels that are in unique_labels_str but not in self.color_dict.keys()
+            print('Labels in unique_labels_str but not in color_dict:', set(unique_labels_str) - set(self.color_dict.keys()))
+
+            # Print the labels that are in self.color_dict.keys() but not in unique_labels_str
+            print('Labels in color_dict but not in unique_labels_str:', set(self.color_dict.keys()) - set(unique_labels_str))
+
+            colors = generate_distinct_colors(len(unique_labels_str))
+            color_dict = {label: color for label, color in zip(unique_labels_str, colors)}
+            export_colors(color_dict, self.output_dir)
+            self.color_dict = color_dict
+
+        # Order unique_labels_str in the way that they appear in color_dict
+        unique_labels_str = [label for label in self.color_dict.keys() if label in unique_labels_str]
+
+        if self.output_dir[-1] != '/':
+            self.output_dir += '/'
+
+        mask_dir = self.output_dir + 'labels/'
+        if not os.path.exists(mask_dir):
+            os.makedirs(mask_dir)
+
         for image_name in self.image_names_csv:
+
             image_path = os.path.join(self.image_dir, image_name + '.jpg')
             image = cv2.imread(image_path)
 
             if image is None:
                 continue
 
+            points = self.input_df[self.input_df['Name'] == image_name].iloc[:, 1:3].to_numpy().astype(int)
+            labels = self.input_df[self.input_df['Name'] == image_name].iloc[:, 3].to_numpy()
+            unique_labels_str_i = np.unique(labels)
+
+            output_dir = self.output_dir + image_name + '/'
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
             # reset gt_points and gt_labels
             self.gt_points = np.array([])
             self.gt_labels = np.array([])
 
-            # crop the image 200 pixels from each side
-            cropped_image = image[200:image.shape[0]-200, 200:image.shape[1]-200]
-            
-            if cropped_image is None:
+            if image is None:
                 print(f"Failed to load image at {image_path}")
                 continue
 
-            cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
-                
-            points = self.input_df[self.input_df['Name'] == image_name].iloc[:, 1:3].to_numpy().astype(int)
-            labels = self.input_df[self.input_df['Name'] == image_name].iloc[:, 3].to_numpy()
-            unique_labels_str = np.unique(labels)
-            unique_labels = range(len(unique_labels_str))
-            label_dict = {}
-            for i in range(len(unique_labels_str)):
-                label_dict[unique_labels_str[i]] = unique_labels[i]
-
             print('Starting prediction for image', image_name)
-            # plot_mosaic(image, unique_labels_str, 'Sebens_MA_LTM/output_test/several_points/')
 
-            image_df = self.expand_labels(points, labels, unique_labels_str, image, cropped_image, image_name)
+            image_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, output_dir, self.remove_far_points, generate_eval_images=self.generate_eval_images)
             
-            generate_image(image_df, image, self.gt_points, self.gt_labels, color_dict, image_name, output_dir)
+            if generate_eval_images:
+                generate_image(image_df, image, self.gt_points, self.gt_labels, self.color_dict, image_name, output_dir)
 
             # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
             mask = np.zeros((image.shape[0], image.shape[1]), dtype=float)
 
             point_labels = {}
-            for i in range(1, len(unique_labels_str)+1):
-                expanded_i = image_df[image_df['Label'] == unique_labels_str[i-1]].iloc[:, 1:3].to_numpy().astype(int) + 200
+            for i, label in enumerate(unique_labels_str, start=1):
+                expanded_i = image_df[image_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
                 for point in expanded_i:
+                    point = point + BORDER_SIZE
                     point_tuple = tuple(point)
-                    if point_tuple in point_labels:
-                        # If the point already has a label, set its value in the mask to 0
-                        mask[point[0], point[1]] = 0
-                    else:
-                        # If the point does not have a label, assign the new label and add it to point_labels
-                        mask[point[0], point[1]] = i
-                        point_labels[point_tuple] = unique_labels_str[i-1]
+                    mask[point[0], point[1]] = i
+                    point_labels[point_tuple] = label
                 
-            # cv2.imshow('Image', mask)
-            # cv2.waitKey(0)
-            # cv2.destroyAllWindows()
-            cv2.imwrite(output_dir+image_name+'_'+unique_labels_str[i-1]+'_mask.png', mask)
+            cv2.imwrite(mask_dir+image_name+'_labels.png', mask)
         
     @abstractmethod
-    def expand_labels(self, points, labels, unique_labels_str, image, cropped_image, image_name):
+    def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
         pass
 
 class SAMLabelExpander(LabelExpander):
-    def __init__(self, color_dict, input_df, image_dir, output_df, output_dir, predictor):
-        super().__init__(color_dict, input_df, image_dir, output_df, output_dir)
+    def __init__(self, color_dict, input_df, image_dir, output_df, output_dir, predictor, remove_far_points=False, generate_eval_images=False):
+        super().__init__(color_dict, input_df, image_dir, output_df, output_dir, remove_far_points, generate_eval_images)
         self.predictor = predictor
         
 
-    def expand_labels(self, points, labels, unique_labels_str, image, cropped_image, image_name):
+    def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
         expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label"])
+
+        # crop the image BORDER_SIZE pixels from each side
+        cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
+        cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
         predictor.set_image(cropped_image)
 
         # SAM-specific label expansion code here# use SAM to expand the points into masks. Artificial new GT points.
         for i in range(len(unique_labels_str)):
-            # print(f"Label {i+1}: {unique_labels_str[i]}")
-            # get the points with the label
 
-            if unique_labels_str[i] == 'LIT':
-                continue
+            # if unique_labels_str[i] == 'LIT':
+            #     continue
             
             _points = points[labels==unique_labels_str[i]]
-
-            # # Add points with different labels
-            # different_labels_points = points[labels!=unique_labels_str[i]]
-            # _points = np.concatenate((_points, different_labels_points), axis=0)
-            _points = _points[(_points[:, 0] > 200) & (_points[:, 0] < cropped_image.shape[0]-200) & (_points[:, 1] > 200) & (_points[:, 1] < cropped_image.shape[1]-200)]
+            _points = _points[(_points[:, 0] > BORDER_SIZE) & (_points[:, 0] < image.shape[0] - BORDER_SIZE) & (_points[:, 1] > BORDER_SIZE) & (_points[:, 1] < image.shape[1] - BORDER_SIZE)]
 
             if len(_points) == 0:
                 print(f"No points for label {unique_labels_str[i]}")
                 continue
             # Transform the points after cropping
 
-            # change x and y coordinates
+            # Change x and y coordinates
             _points = np.flip(_points, axis=1)
 
-            # store _points in gt_points
+            # Store _points in gt_points
             if len(self.gt_points) == 0:
                 self.gt_points = _points
             else:
@@ -387,64 +543,88 @@ class SAMLabelExpander(LabelExpander):
 
             _labels = np.ones(len(_points), dtype=int)
 
-            # store _labels in gt_labels
+            # Store _labels in gt_labels
             if len(self.gt_labels) == 0:
                 self.gt_labels = _labels
             else:
                 self.gt_labels = np.concatenate((self.gt_labels, _labels), axis=0)
 
             _points_pred = _points.copy()
-            _points_pred[:, 0] -= 200
-            _points_pred[:, 1] -= 200
+            _points_pred[:, 0] -= BORDER_SIZE
+            _points_pred[:, 1] -= BORDER_SIZE
 
             best_mask = np.zeros((cropped_image.shape[0], cropped_image.shape[1]), dtype=bool)
 
             for p, l in zip(_points_pred, _labels):
-                masks, scores, logits = self.predictor.predict(
+                _, _, logits = self.predictor.predict(
                     point_coords=np.array([p]),
                     point_labels=np.array([l]),
                     multimask_output=True,
-                    # return_logits=True
                 )
-                        
-                # Merge masks[0] with best_mask
-                # masks[0] = masks[0] > 2.0
-                best_mask = np.logical_or(best_mask, masks[0])
-            
-            # remove far points from gt_points
-            height, width = best_mask.shape
-            far_mask = np.zeros((height, width), dtype=bool)
 
+                # best_mask = np.logical_or(best_mask1, masks[0])
+                
+                mask_input = logits[0, :, :] # Choose the model's best mask
+
+                mask, _, _ = self.predictor.predict(
+                    point_coords=np.array([p]),
+                    point_labels=np.array([l]),
+                    mask_input= mask_input[None, :, :],
+                    multimask_output=True,
+                )
+
+                best_mask = np.logical_or(best_mask, mask[0])
+            
             min_distance = np.inf
             max_distance = -np.inf
 
-            _points_pred[:, 0] += 200
-            _points_pred[:, 1] += 200
+            if remove_far_points:
+                # Remove far points from gt_points
+                height, width = best_mask.shape
+                far_mask = np.zeros((height, width), dtype=bool)
 
-            # for idx in np.argwhere(best_mask):
-            #     k, j = idx
-            #     p = np.array([k, j])
-            #     is_far = True
-            #     for gt_p in _points_pred:
-            #         distance = np.linalg.norm(p - np.array(gt_p))
-            #         min_distance = min(min_distance, distance)
-            #         max_distance = max(max_distance, distance)
-            #         if distance <= 200.0:
-            #             is_far = False
-            #             break
-            #     far_mask[k, j] = is_far
+                # Copy of best_mask before changes
+                # best_mask_before = best_mask.copy()
 
-            # print("Minimum distance:", min_distance)
-            # print("Maximum distance:", max_distance)
-            # print("Number of far points:", np.sum(far_mask))
+                for idx in np.argwhere(best_mask):
+                    row, col = idx
+                    p = np.array([col, row])
+                    distances = [np.linalg.norm(p - np.array(gt_p)) for gt_p in _points_pred]
+                    min_distance = min(distances)
+                    max_distance = max(max_distance, min_distance)
+                    far_mask[row, col] = min_distance > MAX_DISTANCE
 
-            # best_mask[far_mask] = 0
+                best_mask[far_mask] = 0
             
+            _points_pred[:, 0] += BORDER_SIZE
+            _points_pred[:, 1] += BORDER_SIZE
+            
+            # _points_pred_show = _points_pred.copy()
 
-            # add new points to the new_points array
+            # Plotting
+            # fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+
+            # # Plot best_mask before changes
+            # ax[0].imshow(best_mask_before, cmap='gray')
+            # ax[0].scatter(_points_pred_show[:, 0], _points_pred_show[:, 1], color='red', s=1)  # plot _points_pred as red points
+            # ax[0].set_title('Best Mask before changes '+unique_labels_str[i])
+
+            # # Plot far_mask
+            # ax[1].imshow(far_mask, cmap='gray')
+            # ax[1].scatter(_points_pred_show[:, 0], _points_pred_show[:, 1], color='red', s=1)  # plot _points_pred as red points
+            # ax[1].set_title('Far Mask with GT points '+unique_labels_str[i])
+
+            # # Plot best_mask after changes
+            # ax[2].imshow(best_mask, cmap='gray')
+            # ax[2].scatter(_points_pred_show[:, 0], _points_pred_show[:, 1], color='red', s=1)  # plot _points_pred as red points
+            # ax[2].set_title('Best Mask after changes '+unique_labels_str[i])
+
+            # plt.show()
+
+            # Add new points to the new_points array
             new_points = np.argwhere(best_mask)
 
-            # add the new points to the output dataframe
+            # Add the new points to the output dataframe
             data = []
             for point in new_points:
                 data.append({
@@ -456,19 +636,12 @@ class SAMLabelExpander(LabelExpander):
 
             new_data_df = pd.DataFrame(data)
 
-
-            # generate_image(new_data_df, image, _points_pred, _labels, color_dict, image_name, output_dir, unique_labels_str[i])
             
-            expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)
-            # output_df = output_df.concat(new_data_df, ignore_index=True)
+            if generate_eval_images:
+                generate_image_per_class(new_data_df, image, _points_pred, _labels, color_dict, image_name, output_dir, unique_labels_str[i])
             
+            expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)            
             print(f'{len(_points_pred)} {unique_labels_str[i]} points expanded to {len(new_points)}')
-            # print(f'image_df has {len(image_df)} points')
-
-        
-        # check if there are two rows with the same point and different labels
-        # print(expanded_df.duplicated(subset=['Row', 'Column'], keep=False))
-        # print(expanded_df[expanded_df.duplicated(subset=['Row', 'Column'], keep=False)])
 
         return expanded_df
 
@@ -491,7 +664,13 @@ class SuperpixelLabelExpander(LabelExpander):
         
         return sparse_image
 
-    def expand_labels(self, points, labels, unique_labels_str, image, cropped_image, image_name):
+    def expand_labels(self, points, labels, unique_labels_str, image, image_name):
+
+        # crop the image BORDER_SIZE pixels from each side
+        cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
+        cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
+        predictor.set_image(cropped_image)
+
         for i, label in enumerate(unique_labels_str):
             self.gray_RGBCorrelation[i] = self.color_dict[label]
 
@@ -519,7 +698,7 @@ class SuperpixelLabelExpander(LabelExpander):
         # Save the expanded image
         plt.figure(figsize=(10,10))
         plt.imshow(expanded_image)
-        show_points(points, labels, plt.gca(), marker_size=100, marker_color='black', edge_color='yellow')
+        show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
         plt.axis('off')
 
         label_str = 'ALL'
@@ -536,8 +715,19 @@ parser.add_argument("--input_dir", help="Directory containing images", required=
 parser.add_argument("--output_dir", help="Directory to save the output images", required=True)
 parser.add_argument("--ground-truth", help="CSV file containing the points and labels", required=True)
 parser.add_argument("--model", help="Model to use for prediction", default="sam", choices=["sam", "superpixel"])
+parser.add_argument("--max_distance", help="Maximum distance between expanded points and the seed", type=int)
+parser.add_argument("--generate_eval_images", help="Generate evaluation images for the expansion (sparse and expanded images for all the classes)", required=False)
 args = parser.parse_args()
 
+remove_far_points = False
+generate_eval_images = False
+
+if args.generate_eval_images:
+    generate_eval_images = True
+
+if args.max_distance:
+    MAX_DISTANCE = args.max_distance
+    remove_far_points = True
 image_dir = args.input_dir
 
 output_dir = args.output_dir
@@ -563,9 +753,9 @@ if args.model == "sam":
     model = sam_model_registry["vit_h"](checkpoint="vit_h.pth")
     predictor = SamPredictor(model)
     # mask_generator = SamAutomaticMaskGenerator(model=model, points_per_side=32)
-    LabelExpander = SAMLabelExpander(color_dict, input_df, image_dir, output_df, output_dir, predictor)
+    LabelExpander = SAMLabelExpander(color_dict, input_df, image_dir, output_df, output_dir, predictor, remove_far_points, generate_eval_images)
 elif args.model == "superpixel":
-    LabelExpander = SuperpixelLabelExpander(color_dict, input_df, image_dir, output_df, output_dir)
+    LabelExpander = SuperpixelLabelExpander(color_dict, input_df, image_dir, output_df, output_dir, generate_eval_images)
 else:
     print("Invalid model option. Please choose either 'sam' or 'superpixel'.")
     sys.exit(1)
