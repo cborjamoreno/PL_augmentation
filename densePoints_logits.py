@@ -86,40 +86,7 @@ def kde_subsample(points, bandwidth, subsample_indices):
     kde.fit(subsample_points)
     return kde
 
-# def estimate_density(points, bandwidth=1.0, subsample_rate=0.1, n_jobs=4):
-#     n_points = len(points)
-#     n_subsample = max(1, int(n_points * subsample_rate))
-    
-#     # Randomly sample a subset of indices
-#     subsample_indices = np.random.choice(n_points, n_subsample, replace=False)
-#     subsample_points = points[subsample_indices]
-    
-#     # Split the indices for parallel processing
-#     split_indices = np.array_split(subsample_indices, n_jobs)
-    
-#     # Create a pool of processes
-#     with mp.Pool(n_jobs) as pool:
-#         async_results = []
-#         for split in tqdm(split_indices, desc="Estimating density"):
-#             async_results.append(pool.apply_async(kde_subsample, args=(points, bandwidth, split)))
-        
-#         # Get results from each process
-#         kde_list = [result.get() for result in async_results]
-    
-#     # Aggregate results from each process
-#     start_time = time.time()
-#     densities = np.zeros(n_points)
-#     for kde in kde_list:
-#         densities += np.exp(kde.score_samples(points))
-#     end_time = time.time()
-
-#     print(f"Time taken: {end_time - start_time} seconds")
-    
-#     # Average the densities
-#     densities /= n_jobs
-#     return densities
-
-def estimate_density(points, bandwidth=1.0, n_jobs=4):
+def estimate_density(points, bandwidth=1.0):
     kde = KernelDensity(bandwidth=bandwidth)
     kde.fit(points)
     return kde
@@ -148,10 +115,14 @@ def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
     mean_densities = densities.mean()
     std_densities = densities.std()
 
+    # Normalize priorities and densities by subtracting their means
+    normalized_priorities = (priorities - mean_priorities) / std_priorities if std_priorities != 0 else priorities - mean_priorities
+    normalized_densities = (densities - mean_densities) / std_densities if std_densities != 0 else densities - mean_densities
+
     density_scale = std_priorities / std_densities if std_densities != 0 else 1
 
     with mp.Pool(mp.cpu_count()) as pool:
-        args = [(label, priorities, image_df, densities, density_factor, max_priority, density_scale) for label in priorities.index]
+        args = [(label, normalized_priorities, image_df, normalized_densities, density_factor, max_priority, density_scale) for label in priorities.index]
         label_priorities = dict(pool.map(adjust_priority, tqdm(args, desc="Adjusting priorities")))
 
     return label_priorities
@@ -196,7 +167,6 @@ def generate_image(image_df, image, gt_points, gt_labels, color_dict, image_name
             label_counts[point] += 1
         else:
             label_counts[point] = 1
-
 
     bandwidth = 1.0
 
@@ -654,6 +624,11 @@ class SAMLabelExpander(LabelExpander):
     def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
         expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label"])
 
+        # dictionary of masks
+        masks = {}
+
+        bool_masks = {}
+
         # crop the image BORDER_SIZE pixels from each side
         cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
@@ -699,7 +674,8 @@ class SAMLabelExpander(LabelExpander):
             _points_pred[:, 0] -= BORDER_SIZE
             _points_pred[:, 1] -= BORDER_SIZE
 
-            best_mask = np.zeros((cropped_image.shape[0], cropped_image.shape[1]), dtype=bool)
+            best_mask = np.zeros((cropped_image.shape[0], cropped_image.shape[1]), dtype=float)
+            best_bool_mask = np.zeros((cropped_image.shape[0], cropped_image.shape[1]), dtype=bool)
 
             for p, l in zip(_points_pred, _labels_ones):
                 _, _, logits = self.predictor.predict(
@@ -707,7 +683,6 @@ class SAMLabelExpander(LabelExpander):
                     point_labels=np.array([l]),
                     multimask_output=True,
                 )
-                
                 mask_input = logits[0, :, :] # Choose the model's best mask
 
                 mask, _, _ = self.predictor.predict(
@@ -715,22 +690,39 @@ class SAMLabelExpander(LabelExpander):
                     point_labels=np.array([l]),
                     mask_input= mask_input[None, :, :],
                     multimask_output=True,
+                    return_logits=True,
                 )
 
-                best_mask = np.logical_or(best_mask, mask[0])          
+                m = mask[0]
+                bm = m > 0.0
+                best_mask = np.maximum(best_mask, m)
+                best_bool_mask = np.logical_or(best_bool_mask, bm)
             
-            min_distance = np.inf
-            max_distance = -np.inf
+            for j in range(best_mask.shape[0]):
+                for k in range(best_mask.shape[1]):
+                    if best_bool_mask[j, k]:
+                        # Search for a mask in masks that has a higher value at i, j
+                        for key, m in masks.items():  # Iterate over the values of the dictionary
+                            if m[j, k] > best_mask[j, k]:  # Assuming mask is a 2D array
+                                best_bool_mask[j, k] = False
+                                print(f"Point ({j}, {k}) is already in the mask for label {key}. {m[j, k]} > {best_mask[j, k]}")
+                                break
+            
+            masks[unique_labels_str[i]] = best_mask
+            bool_masks[unique_labels_str[i]] = best_bool_mask
 
             if remove_far_points:
+                min_distance = np.inf
+                max_distance = -np.inf
+
                 # Remove far points from gt_points
-                height, width = best_mask.shape
+                height, width = best_bool_mask.shape
                 far_mask = np.zeros((height, width), dtype=bool)
 
                 # Copy of best_mask before changes
                 # best_mask_before = best_mask.copy()
 
-                for idx in np.argwhere(best_mask):
+                for idx in np.argwhere(best_bool_mask):
                     row, col = idx
                     p = np.array([col, row])
                     distances = [np.linalg.norm(p - np.array(gt_p)) for gt_p in _points_pred]
@@ -738,7 +730,7 @@ class SAMLabelExpander(LabelExpander):
                     max_distance = max(max_distance, min_distance)
                     far_mask[row, col] = min_distance > MAX_DISTANCE
 
-                best_mask[far_mask] = 0
+                best_bool_mask[far_mask] = 0
             
             _points_pred[:, 0] += BORDER_SIZE
             _points_pred[:, 1] += BORDER_SIZE
@@ -766,7 +758,7 @@ class SAMLabelExpander(LabelExpander):
             # plt.show()
 
             # Add new points to the new_points array
-            new_points = np.argwhere(best_mask)
+            new_points = np.argwhere(best_bool_mask)
 
             # Add the new points to the output dataframe
             data = []
@@ -779,7 +771,6 @@ class SAMLabelExpander(LabelExpander):
                 })
 
             new_data_df = pd.DataFrame(data)
-
             
             # if generate_eval_images:
             #     generate_image_per_class(new_data_df, image, _points_pred, _labels_ones, color_dict, image_name, output_dir, unique_labels_str[i])
