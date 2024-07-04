@@ -3,8 +3,11 @@ import re
 import shutil
 
 # Define the main folder and the output folder
-main_folder = '/home/cbm/BOSTON/CoralNet_expansion/Sebens_MA_LTM/output_test/output_inputmask_priorities_1/'
-output_folder = '/home/cbm/BOSTON/CoralNet_expansion/Sebens_MA_LTM/output_test/output_inputmask_priorities_1/reorganized/'
+main_folder = '/home/cbm/BOSTON/CoralNet_expansion/Sebens_MA_LTM/out_superpixels/eval_images/'
+output_folder = '/home/cbm/BOSTON/CoralNet_expansion/Sebens_MA_LTM/out_superpixels/reorganized/'
+
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
 # Initialize an empty set to store the unique class names
 class_names = set()

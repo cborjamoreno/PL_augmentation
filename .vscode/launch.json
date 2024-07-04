@@ -8,13 +8,14 @@
             "name": "Python Debugger: Current File with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/densePoints.py",
+            "program": "${workspaceFolder}/densePoints_copy.py",
             "console": "integratedTerminal",
             "args": [
-                "--input_dir", "Sebens_MA_LTM/images/",
-                "--output_dir", "Sebens_MA_LTM/output_test/output_all2/",
-                "--ground-truth", "Sebens_MA_LTM/annotations_Sebens_MA_LTM.csv",
-                "--model", "sam"
+                "--input_dir", "Sebens_MA_LTM/test/",
+                "--output_dir", "Sebens_MA_LTM/test/out_superpixels/",
+                "--ground-truth", "Sebens_MA_LTM/annotations_in_images_filtered.csv",
+                "--model", "sam", "--dataset", "Sebens_MA_LTM", "--color_dict",
+                "color_dict.csv",
             ]
         }
     ]
