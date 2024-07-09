@@ -18,9 +18,11 @@ from abc import ABC, abstractmethod
 from sklearn.neighbors import KernelDensity
 import time
 import multiprocessing as mp
-from tqdm import tqdm 
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+from shapely.geometry import Polygon
+from shapely.validation import make_valid
+import torch
+import torchvision
 
 BORDER_SIZE = 150
 MAX_DISTANCE = 100
@@ -100,15 +102,12 @@ def adjust_priority(args):
     label, priorities, image_df, densities, density_factor, max_priority, density_scale = args
     label_indices = image_df[image_df['Label'] == label].index
     label_density = densities[label_indices].mean() * density_scale  # Average density for the label
-    print(f"Label {label}: Density - {label_density}")
-    print(f"Label {label}: Priority - {max_priority + 1 - priorities[label]}")
     adjusted_priority = max_priority + 1 - priorities[label] + density_factor * label_density
     return label, adjusted_priority
 
 def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
     priorities = image_df['Label'].value_counts()
     max_priority = priorities.max()
-    print('priorities:', priorities)
 
     # Calculate scaling factor for densities
     mean_priorities = priorities.mean()
@@ -120,12 +119,115 @@ def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
 
     with mp.Pool(mp.cpu_count()) as pool:
         args = [(label, priorities, image_df, densities, density_factor, max_priority, density_scale) for label in priorities.index]
-        label_priorities = dict(pool.map(adjust_priority, tqdm(args, desc="Adjusting priorities")))
+        label_priorities = dict(pool.map(adjust_priority, args))
 
     return label_priorities
 
+def calculate_iou_polygon(segment_data, other_segment_data):
+    # Convert DataFrame rows to lists of (x, y) tuples
+    polygon1_points = segment_data[['Column', 'Row']].values.tolist()
+    polygon2_points = other_segment_data[['Column', 'Row']].values.tolist()
+    
+    # Create polygons
+    polygon1 = Polygon(polygon1_points)
+    polygon2 = Polygon(polygon2_points)
+
+    # Validate and correct polygons if necessary
+    if not polygon1.is_valid:
+        polygon1 = make_valid(polygon1)
+    if not polygon2.is_valid:
+        polygon2 = make_valid(polygon2)
+
+    # Calculate intersection and union areas
+    try:
+        intersection_area = polygon1.intersection(polygon2).area
+        union_area = polygon1.area + polygon2.area - intersection_area
+        
+        # Avoid division by zero
+        if union_area == 0:
+            return 0
+        
+        # Calculate and return IoU
+        return intersection_area / union_area
+    except Exception as e:
+        print(f"Error calculating IoU: {e}")
+        return 0
+    
+def calculate_iou_boxes(segment_data, other_segment_data):
+    # Calculate bounding boxes
+    bbox1 = [segment_data['Column'].min(), segment_data['Row'].min(), segment_data['Column'].max(), segment_data['Row'].max()]
+    bbox2 = [other_segment_data['Column'].min(), other_segment_data['Row'].min(), other_segment_data['Column'].max(), other_segment_data['Row'].max()]
+
+    # Calculate intersection
+    x_left = max(bbox1[0], bbox2[0])
+    y_top = max(bbox1[1], bbox2[1])
+    x_right = min(bbox1[2], bbox2[2])
+    y_bottom = min(bbox1[3], bbox2[3])
+
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0  # No overlap
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+    # Calculate union
+    bbox1_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+    bbox2_area = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+    union_area = bbox1_area + bbox2_area - intersection_area
+
+    # Avoid division by zero
+    if union_area == 0:
+        return 0
+
+    # Calculate and return IoU
+    return intersection_area / union_area
+
+
+def is_point_in_segment(point, segment_data):
+    """Check if the point exists in segment_data."""
+    return any((segment_data['Row'] == point[1]) & (segment_data['Column'] == point[0]))
+    
+
 def merge_labels(image_df, gt_points, gt_labels):
     merged_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
+    segments = image_df.groupby('Segment')
+    iou_threshold = 0.5
+    chosen_segments_by_iou = set()  # Set to keep track of segments chosen by IoU
+    points_to_add = []
+
+    for i, (segment_id, segment_data) in enumerate(segments):
+        for other_segment_id, other_segment_data in list(segments)[i+1:]:
+            if segment_data['Label'].iloc[0] != other_segment_data['Label'].iloc[0]:
+                iou = calculate_iou_boxes(segment_data, other_segment_data)
+
+                if iou > iou_threshold:
+
+                    # print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
+                    # Initialize counters
+                    segment_count = 0
+                    other_segment_count = 0
+
+                    # get gt points that belongs to each class
+                    gt_points_label_segment = gt_points[gt_labels == segment_data['Label'].iloc[0]]
+                    gt_points_label_other_segment = gt_points[gt_labels == other_segment_data['Label'].iloc[0]]
+
+                    # Count the number of gt points inide each segment
+                    for point in gt_points_label_segment:
+                        if is_point_in_segment(point, segment_data):
+                            segment_count += 1
+                    
+                    for point in gt_points_label_other_segment:
+                        if is_point_in_segment(point, other_segment_data):
+                            other_segment_count += 1
+
+                    chosen_segment_id = segment_id if segment_count > other_segment_count else other_segment_id
+                    chosen_segment_data = segment_data if segment_count > other_segment_count else other_segment_data
+                    # print(f"Chose segment {chosen_segment_id}. Points in segment {segment_id}: {segment_count}, points in segment {other_segment_id}: {other_segment_count}")
+                    
+                    # concat merged_df with segment data
+                    merged_df = pd.concat([merged_df, chosen_segment_data])
+                    chosen_segments_by_iou.add(segment_id)
+                    chosen_segments_by_iou.add(other_segment_id)
+
     point_labels = {}
     label_counts = {}
     unique_labels = np.unique(gt_labels)
@@ -134,7 +236,7 @@ def merge_labels(image_df, gt_points, gt_labels):
 
     for label in unique_labels:
         label_indices = image_df['Label'] == label
-        expanded_label_points = image_df.loc[label_indices, ['Row', 'Column']].values + BORDER_SIZE
+        expanded_label_points = image_df.loc[label_indices, ['Row', 'Column']].values
         if expanded_label_points.size == 0:
             continue
         densities_label = evaluate_density(kde_dict[label], expanded_label_points)
@@ -142,9 +244,10 @@ def merge_labels(image_df, gt_points, gt_labels):
 
     label_priorities = adjust_priorities_with_density(image_df, assigned_densities, density_factor=0.5)
 
-    points_to_add = []
     for index, row in image_df.iterrows():
-        adjusted_point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
+        if row['Segment'] in chosen_segments_by_iou:  # Check the set instead of DataFrame
+            continue
+        adjusted_point = (row['Row'], row['Column'])
         label = row['Label']
         name = row['Name']
         label_count = label_counts.get(adjusted_point, 0) + 1
@@ -156,7 +259,7 @@ def merge_labels(image_df, gt_points, gt_labels):
 
     for point, (name, label) in point_labels.items():
         row, column = point
-        points_to_add.append({'Name': name, 'Row': row - BORDER_SIZE, 'Column': column - BORDER_SIZE, 'Label': label})
+        points_to_add.append({'Name': name, 'Row': row, 'Column': column, 'Label': label})
 
     merged_df = pd.concat([merged_df, pd.DataFrame(points_to_add)], ignore_index=True)
     return merged_df
@@ -200,7 +303,7 @@ def generate_image(image_df, image, gt_points, color_dict, image_name, output_di
             # Get the color and add an alpha channel
             color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
             blend_translucent_color(black, point[0], point[1], color, color[3])
-    print(f"Time taken by color the points in the image: {time.time() - start} seconds")
+    # print(f"Time taken by color the points in the image: {time.time() - start} seconds")
 
     plt.figure(figsize=figsize, dpi=dpi)
     plt.imshow(black)
@@ -252,6 +355,40 @@ def generate_image_per_class(image_df, image, points, labels, color_dict, image_
     plt.axis('off')
 
     plt.savefig(output_dir + image_name + '_' + label_str + '_expanded.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+def generate_image_per_segment(image_df, segment, image, points, labels, color_dict, image_name, output_dir, label_str):
+    
+    # Create a black image
+    black = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+    black = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2RGB)
+    black = black.astype(float) / 255
+    black = np.dstack((black, np.ones((black.shape[0], black.shape[1])))) # RGBA
+
+    height, width, _ = black.shape
+    dpi = 100  # Change this to adjust the quality of the output image
+    figsize = width / dpi, height / dpi
+
+    if output_dir[-1] != '/':
+        output_dir += '/'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Color the points in the image
+    for _, row in image_df.iterrows():
+        if row['Column'] < black.shape[1] and row['Row'] < black.shape[0]:
+            point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
+
+            # Get the color and add an alpha channel
+            color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
+            blend_translucent_color(black, point[0], point[1], color, color[3])
+
+    plt.figure(figsize=figsize, dpi=dpi)
+    plt.imshow(black)
+    show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
+    plt.axis('off')
+
+    plt.savefig(f"{output_dir}{image_name}_segment_{segment}.png", dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close()
 
 def generate_distinct_colors(n, threshold=50):
@@ -394,7 +531,7 @@ class LabelExpander(ABC):
         self.remove_far_points = remove_far_points
         self.generate_eval_images = generate_eval_images
         self.generate_csv = generate_csv
-        self.checkMissmatchInFiles()
+        # self.checkMissmatchInFiles()
 
     def checkMissmatchInFiles(self):
         # Print images in .csv that are not in the image directory
@@ -445,17 +582,18 @@ class LabelExpander(ABC):
             
             start_expand = time.time()
             image_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, eval_images_dir_i, self.remove_far_points, generate_eval_images=self.generate_eval_images)
-            print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
+            # print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
 
             start_merge = time.time()
             # Merge the dense labels
-            merged_df = merge_labels(image_df, self.gt_points, self.gt_labels)
-            print(f"Time taken by merge_labels: {time.time() - start_merge} seconds")
+            gt_points = self.gt_points - BORDER_SIZE
+            merged_df = merge_labels(image_df, gt_points, self.gt_labels)
+            # print(f"Time taken by merge_labels: {time.time() - start_merge} seconds")
 
             if self.generate_eval_images:
                 start_generate_image = time.time() 
                 generate_image(merged_df, image, self.gt_points, self.color_dict, image_name, eval_images_dir_i)
-                print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
+                # print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
 
             if self.generate_csv:
                 
@@ -531,14 +669,17 @@ class SAMLabelExpander(LabelExpander):
         
 
     def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
-        expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label"])
+        expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label", "Segment"])
 
         # crop the image BORDER_SIZE pixels from each side
         cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
         predictor.set_image(cropped_image)
 
-        # SAM-specific label expansion code here# use SAM to expand the points into masks. Artificial new GT points.
+        # Initialize the segment counter
+        segment_counter = 0
+
+        # use SAM to expand the points into masks. Artificial new GT points.
         for i in range(len(unique_labels_str)):
             
             # Filter points and labels by unique_labels_str[i]
@@ -579,8 +720,27 @@ class SAMLabelExpander(LabelExpander):
             _points_pred[:, 1] -= BORDER_SIZE
 
             best_mask = np.zeros((cropped_image.shape[0], cropped_image.shape[1]), dtype=bool)
+            new_points = np.argwhere(best_mask)
+            data = []
 
             for p, l in zip(_points_pred, _labels_ones):
+
+                # print(f"Expanding point {p} with label {l}")
+
+                # Convert point and label to a format that can be compared
+                point_row, point_column = p[1], p[0]
+                label_str = unique_labels_str[i]
+
+                start = time.time()
+                # Check if point with the same coordinates and label already exists in data
+                point_exists = any(d["Row"] == point_row and d["Column"] == point_column and d["Label"] == label_str for d in data)
+                # print(f"Time taken by point_exists: {time.time() - start} seconds")
+
+                if point_exists:
+                    # print(f"Point {p} with label {l} already exists in data")
+                    continue
+
+                start = time.time()
                 _, _, logits = self.predictor.predict(
                     point_coords=np.array([p]),
                     point_labels=np.array([l]),
@@ -592,73 +752,41 @@ class SAMLabelExpander(LabelExpander):
                 mask, _, _ = self.predictor.predict(
                     point_coords=np.array([p]),
                     point_labels=np.array([l]),
-                    mask_input= mask_input[None, :, :],
+                    mask_input=mask_input[None, :, :],
                     multimask_output=True,
                 )
 
-                best_mask = np.logical_or(best_mask, mask[0])          
-            
-            min_distance = np.inf
-            max_distance = -np.inf
+                # print(f"Time taken by predict: {time.time() - start} seconds")
 
-            if remove_far_points:
-                # Remove far points from gt_points
-                height, width = best_mask.shape
-                far_mask = np.zeros((height, width), dtype=bool)
+                # Increment the segment counter for each new mask
+                segment_counter += 1
 
-                # Copy of best_mask before changes
-                # best_mask_before = best_mask.copy()
+                # Determine new points for the current mask
+                new_points = np.argwhere(mask[0])
 
-                for idx in np.argwhere(best_mask):
-                    row, col = idx
-                    p = np.array([col, row])
-                    distances = [np.linalg.norm(p - np.array(gt_p)) for gt_p in _points_pred]
-                    min_distance = min(distances)
-                    max_distance = max(max_distance, min_distance)
-                    far_mask[row, col] = min_distance > MAX_DISTANCE
+                start = time.time()
 
-                best_mask[far_mask] = 0
-            
+                # Step 1: Create a set for existing points for the specific label
+                existing_points = {(d["Row"], d["Column"]) for d in data if d["Label"] == label_str}
+
+                for point in new_points:
+                    # Step 3: Check if the point exists in the set
+                    if (point[0], point[1]) not in existing_points:
+                        # The point does not exist, so add it to both `data` and the set
+                        data.append({
+                            "Name": image_name,
+                            "Row": point[0],
+                            "Column": point[1],
+                            "Label": label_str,
+                            "Segment": segment_counter
+                        })
+                        # Step 4: Add the new point to the set
+                        existing_points.add((point[0], point[1]))
+                       
             _points_pred[:, 0] += BORDER_SIZE
             _points_pred[:, 1] += BORDER_SIZE
-            
-            # _points_pred_show = _points_pred.copy()
-
-            # Plotting
-            # fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-
-            # # Plot best_mask before changes
-            # ax[0].imshow(best_mask_before, cmap='gray')
-            # ax[0].scatter(_points_pred_show[:, 0], _points_pred_show[:, 1], color='red', s=1)  # plot _points_pred as red points
-            # ax[0].set_title('Best Mask before changes '+unique_labels_str[i])
-
-            # # Plot far_mask
-            # ax[1].imshow(far_mask, cmap='gray')
-            # ax[1].scatter(_points_pred_show[:, 0], _points_pred_show[:, 1], color='red', s=1)  # plot _points_pred as red points
-            # ax[1].set_title('Far Mask with GT points '+unique_labels_str[i])
-
-            # # Plot best_mask after changes
-            # ax[2].imshow(best_mask, cmap='gray')
-            # ax[2].scatter(_points_pred_show[:, 0], _points_pred_show[:, 1], color='red', s=1)  # plot _points_pred as red points
-            # ax[2].set_title('Best Mask after changes '+unique_labels_str[i])
-
-            # plt.show()
-
-            # Add new points to the new_points array
-            new_points = np.argwhere(best_mask)
-
-            # Add the new points to the output dataframe
-            data = []
-            for point in new_points:
-                data.append({
-                    "Name": image_name,
-                    "Row": point[0],
-                    "Column": point[1],
-                    "Label": unique_labels_str[i]
-                })
 
             new_data_df = pd.DataFrame(data)
-
             
             if generate_eval_images:
                 generate_image_per_class(new_data_df, image, _points_pred, _labels_ones, color_dict, image_name, output_dir, unique_labels_str[i])
@@ -798,6 +926,13 @@ image_dir = args.input_dir
 if not os.path.exists(image_dir):
     parser.error(f"The directory {image_dir} does not exist")
 
+# Get all the images names in the input directory
+image_names = os.listdir(image_dir)
+image_names = [image_name[:-4] for image_name in image_names if image_name[-4:] == '.jpg']
+
+# Remove all the points of input_df that are not in the images
+input_df = input_df[input_df['Name'].isin(image_names)]
+
 output_dir = args.output_dir
 if output_dir[-1] != '/':
     output_dir += '/'
@@ -832,7 +967,11 @@ if args.generate_eval_images:
 
 if args.model == "sam":
     device = "cuda"
+    print("PyTorch version:", torch.__version__)
+    print("Torchvision version:", torchvision.__version__)
+    print("CUDA is available:", torch.cuda.is_available())
     model = sam_model_registry["vit_h"](checkpoint="vit_h.pth")
+    model.to(device)
     predictor = SamPredictor(model)
     # mask_generator = SamAutomaticMaskGenerator(model=model, points_per_side=32)
     LabelExpander = SAMLabelExpander(color_dict, input_df, labels, image_dir, output_df, output_dir, predictor, remove_far_points, generate_eval_images, generate_csv)

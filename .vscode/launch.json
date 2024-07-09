@@ -11,11 +11,11 @@
             "program": "${workspaceFolder}/densePoints.py",
             "console": "integratedTerminal",
             "args": [
-                "--input_dir", "Sebens_MA_LTM/test/",
-                "--output_dir", "Sebens_MA_LTM/test/out_superpixels/",
-                "--ground-truth", "Sebens_MA_LTM/annotations_in_images_filtered.csv",
+                "--input_dir", "Sebens_MA_LTM/test4/",
+                "--output_dir", "Sebens_MA_LTM/test4/out_test/",
+                "--ground-truth", "Sebens_MA_LTM/all_annotations_filtered.csv",
                 "--model", "sam", "--dataset", "Sebens_MA_LTM", "--color_dict",
-                "color_dict.csv",
+                "color_dict.csv", "--generate_eval_images"
             ]
         }
     ]

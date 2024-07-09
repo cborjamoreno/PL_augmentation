@@ -6,6 +6,8 @@ __pycache__/
 Sebens_MA_LTM/
 ML-Superpixels/
 Krumhansl/
+point-label-aware-superpixels/
+corales/
 
 # C extensions
 *.so
