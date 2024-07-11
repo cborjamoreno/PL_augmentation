@@ -832,7 +832,7 @@ class SAMLabelExpander(LabelExpander):
 
         # Merge the dense labels
         gt_points = self.gt_points - BORDER_SIZE
-        merged_df = merge_labels(image_df, gt_points, self.gt_labels)
+        merged_df = merge_labels(expanded_df, gt_points, self.gt_labels)
 
         return merged_df
 
