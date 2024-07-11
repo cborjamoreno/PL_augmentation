@@ -8,6 +8,8 @@ ML-Superpixels/
 Krumhansl/
 point-label-aware-superpixels/
 corales/
+mosaic/
+SUIM/
 
 # C extensions
 *.so

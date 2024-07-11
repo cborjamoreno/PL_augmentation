@@ -24,7 +24,7 @@ from shapely.validation import make_valid
 import torch
 import torchvision
 
-BORDER_SIZE = 150
+BORDER_SIZE = 0
 MAX_DISTANCE = 100
 
 def get_key(val, dict):
@@ -60,7 +60,7 @@ def show_mask(mask, ax, random_color=False):
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
     ax.imshow(mask_image)
     
-def show_points(coords, labels, ax, marker_size=375, marker_color='blue', edge_color='white'):
+def show_points(coords, labels, ax, marker_size=100, marker_color='blue', edge_color='white'):
     pos_points = coords[labels==1]
     neg_points = coords[labels==0]
     ax.scatter(pos_points[:, 0], pos_points[:, 1], color=marker_color, marker='*', s=marker_size, edgecolor=edge_color, linewidth=1.25) 
@@ -102,12 +102,20 @@ def adjust_priority(args):
     label, priorities, image_df, densities, density_factor, max_priority, density_scale = args
     label_indices = image_df[image_df['Label'] == label].index
     label_density = densities[label_indices].mean() * density_scale  # Average density for the label
+    # print (f"Label {label}: density {label_density}")
+    # print(f"Label {label}: priority {priorities[label]}")
+    # print(f"Label {label}: max_priority {max_priority}")
+    # print(f"Label {label}: density_factor {density_factor}")
     adjusted_priority = max_priority + 1 - priorities[label] + density_factor * label_density
+    # print(f"Label {label}: adjusted_priority {adjusted_priority}")
+    # print('-------------------------------')
     return label, adjusted_priority
 
 def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
     priorities = image_df['Label'].value_counts()
     max_priority = priorities.max()
+
+    # print(priorities)
 
     # Calculate scaling factor for densities
     mean_priorities = priorities.mean()
@@ -165,9 +173,10 @@ def calculate_iou_boxes(segment_data, other_segment_data):
     y_bottom = min(bbox1[3], bbox2[3])
 
     if x_right < x_left or y_bottom < y_top:
-        return 0.0  # No overlap
+        return 0.0, None
 
     intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    intersection_box = [x_left, y_top, x_right, y_bottom]
 
     # Calculate union
     bbox1_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
@@ -176,10 +185,10 @@ def calculate_iou_boxes(segment_data, other_segment_data):
 
     # Avoid division by zero
     if union_area == 0:
-        return 0
+        return 0, None
 
     # Calculate and return IoU
-    return intersection_area / union_area
+    return intersection_area / union_area, intersection_box
 
 
 def is_point_in_segment(point, segment_data):
@@ -194,10 +203,12 @@ def merge_labels(image_df, gt_points, gt_labels):
     chosen_segments_by_iou = set()  # Set to keep track of segments chosen by IoU
     points_to_add = []
 
+    intersection_records = []
+
     for i, (segment_id, segment_data) in enumerate(segments):
         for other_segment_id, other_segment_data in list(segments)[i+1:]:
             if segment_data['Label'].iloc[0] != other_segment_data['Label'].iloc[0]:
-                iou = calculate_iou_boxes(segment_data, other_segment_data)
+                iou, ibox = calculate_iou_boxes(segment_data, other_segment_data)
 
                 if iou > iou_threshold:
 
@@ -227,7 +238,7 @@ def merge_labels(image_df, gt_points, gt_labels):
                     merged_df = pd.concat([merged_df, chosen_segment_data])
                     chosen_segments_by_iou.add(segment_id)
                     chosen_segments_by_iou.add(other_segment_id)
-
+     
     point_labels = {}
     label_counts = {}
     unique_labels = np.unique(gt_labels)
@@ -252,7 +263,9 @@ def merge_labels(image_df, gt_points, gt_labels):
         name = row['Name']
         label_count = label_counts.get(adjusted_point, 0) + 1
         label_counts[adjusted_point] = label_count
-        if label_count > 1 and label_priorities[label] > label_priorities.get(point_labels.get(adjusted_point, None), -1):
+        other_label = point_labels.get(adjusted_point, None)
+        if label_count > 1 and label_priorities[label] > label_priorities[other_label[1]]:
+            # print(f"Point {adjusted_point} has labels {label} and {other_label[1]}. Choosing {label} over {other_label[1]} with priorities {label_priorities[label]} and {label_priorities[other_label[1]]}")
             point_labels[adjusted_point] = (name, label)
         elif label_count == 1:
             point_labels[adjusted_point] = (name, label)
@@ -267,8 +280,6 @@ def merge_labels(image_df, gt_points, gt_labels):
 def generate_image(image_df, image, gt_points, color_dict, image_name, output_dir, label_str=None):
     if label_str is None:
         label_str = 'ALL'
-    
-    print('Generating image for', image_name)
 
     # Create a black image
     black = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
@@ -316,6 +327,10 @@ def generate_image(image_df, image, gt_points, color_dict, image_name, output_di
     print('Image saved in', output_dir + image_name + '_' + label_str + '_expanded.png')
 
 def generate_image_per_class(image_df, image, points, labels, color_dict, image_name, output_dir, label_str):
+
+    # if label_str is not a string convert it to a string
+    if not isinstance(label_str, str):
+        label_str = str(label_str)
     
     # Create a black image
     black = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
@@ -559,12 +574,18 @@ class LabelExpander(ABC):
             os.makedirs(eval_images_dir)
 
         for image_name in self.image_names_csv:
-
-            image_path = os.path.join(self.image_dir, image_name + '.jpg')
+            
+            if image_name[-4:] != '.png':
+                image_path = os.path.join(self.image_dir, image_name + '.jpg')
+            else:
+                image_path = os.path.join(self.image_dir, image_name)
+            print('image_path:', image_path)
             image = cv2.imread(image_path)
 
             if image is None:
                 continue
+
+            print('Expanding labels for', image_name, '...')
 
             points = self.input_df[self.input_df['Name'] == image_name].iloc[:, 1:3].to_numpy().astype(int)
             labels = self.input_df[self.input_df['Name'] == image_name].iloc[:, 3].to_numpy()
@@ -581,18 +602,12 @@ class LabelExpander(ABC):
                 continue
             
             start_expand = time.time()
-            image_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, eval_images_dir_i, self.remove_far_points, generate_eval_images=self.generate_eval_images)
+            expanded_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, eval_images_dir_i, self.remove_far_points, generate_eval_images=self.generate_eval_images)
             # print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
-
-            start_merge = time.time()
-            # Merge the dense labels
-            gt_points = self.gt_points - BORDER_SIZE
-            merged_df = merge_labels(image_df, gt_points, self.gt_labels)
-            # print(f"Time taken by merge_labels: {time.time() - start_merge} seconds")
 
             if self.generate_eval_images:
                 start_generate_image = time.time() 
-                generate_image(merged_df, image, self.gt_points, self.color_dict, image_name, eval_images_dir_i)
+                generate_image(expanded_df, image, self.gt_points, self.color_dict, image_name, eval_images_dir_i)
                 # print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
 
             if self.generate_csv:
@@ -641,15 +656,31 @@ class LabelExpander(ABC):
             # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
             mask = np.zeros((image.shape[0], image.shape[1]), dtype=float)
 
-            point_labels = {}
-            for i, label in enumerate(self.unique_labels_str, start=1):
-                aux = merged_df.iloc[:, 1:3]
-                expanded_i = merged_df[merged_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
-                for point in expanded_i:
-                    point = point + BORDER_SIZE
-                    point_tuple = tuple(point)
-                    mask[point[0], point[1]] = i
-                    point_labels[point_tuple] = label
+            # if self.unique_labels_str are integers, use those values as labels
+            if isinstance(self.unique_labels_str[0], str):
+                color_mask = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+                mask_color_dir = self.output_dir + 'labels_rgb/'
+                if not os.path.exists(mask_color_dir):
+                    os.makedirs(mask_color_dir)
+                for i, label in enumerate(self.unique_labels_str, start=1):
+                    aux = expanded_df.iloc[:, 1:3]
+                    expanded_i = expanded_df[expanded_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
+                    color = self.color_dict[label]  # Retrieve the RGB color for the current label
+                    for point in expanded_i:
+                        point = point + BORDER_SIZE
+                        mask[point[0], point[1]] = i  # Assign grayscale value to mask
+                        value_list = list(color.values())
+                        value_array = np.array(value_list)
+                        color_mask[point[0], point[1]] = value_array
+                cv2.imwrite(mask_color_dir+image_name+'_labels_rgb.png', color_mask)
+
+            elif isinstance(self.unique_labels_str[0], np.int64):
+                for i, label in enumerate(self.unique_labels_str, start=1):
+                    aux = expanded_df.iloc[:, 1:3]
+                    expanded_i = expanded_df[expanded_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
+                    for point in expanded_i:
+                        point = point + BORDER_SIZE
+                        mask[point[0], point[1]] = label
             
             cv2.imwrite(mask_dir+image_name+'_labels.png', mask)
 
@@ -657,6 +688,7 @@ class LabelExpander(ABC):
                 sparse_df.to_csv(self.output_dir + 'sparse.csv', index=False)
         
         print(f"Time taken by expand_images: {time.time() - start_expand_images} seconds")
+        print('Done!\n\n')
         
     @abstractmethod
     def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
@@ -782,7 +814,11 @@ class SAMLabelExpander(LabelExpander):
                         })
                         # Step 4: Add the new point to the set
                         existing_points.add((point[0], point[1]))
-                       
+                    
+                # if label_str == 3 or label_str == 24:
+                #     segment_df = pd.DataFrame(data)
+                #     generate_image_per_segment(segment_df, segment_counter, image, _points_pred, _labels_ones, self.color_dict, image_name, output_dir, unique_labels_str[i])
+
             _points_pred[:, 0] += BORDER_SIZE
             _points_pred[:, 1] += BORDER_SIZE
 
@@ -794,7 +830,11 @@ class SAMLabelExpander(LabelExpander):
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)            
             print(f'{len(_points_pred)} {unique_labels_str[i]} points expanded to {len(new_points)}')
 
-        return expanded_df
+        # Merge the dense labels
+        gt_points = self.gt_points - BORDER_SIZE
+        merged_df = merge_labels(image_df, gt_points, self.gt_labels)
+
+        return merged_df
 
 class SuperpixelLabelExpander(LabelExpander):
     def __init__(self, dataset, color_dict, input_df, labels, image_dir, output_df, output_dir, remove_far_points=False, generate_eval_images=False, generate_csv=False):
@@ -904,6 +944,7 @@ parser.add_argument("--max_distance", help="Maximum distance between expanded po
 parser.add_argument("--generate_eval_images", help="Generate evaluation images for the expansion (sparse and expanded images for all the classes)", required=False, action='store_true')
 parser.add_argument("--color_dict", help="CSV file containing the color dictionary", required=False)
 parser.add_argument("--generate_csv", help="Generate a sparse csv file", required=False, action='store_true')
+parser.add_argument("--frame", help="Frame size to crop the images", required=False, type=int, default=0)
 args = parser.parse_args()
 
 remove_far_points = False
@@ -926,12 +967,15 @@ image_dir = args.input_dir
 if not os.path.exists(image_dir):
     parser.error(f"The directory {image_dir} does not exist")
 
-# Get all the images names in the input directory
-image_names = os.listdir(image_dir)
-image_names = [image_name[:-4] for image_name in image_names if image_name[-4:] == '.jpg']
+if args.frame:
+    BORDER_SIZE = args.frame
 
-# Remove all the points of input_df that are not in the images
-input_df = input_df[input_df['Name'].isin(image_names)]
+# Get all the images names in the input directory
+# image_names = os.listdir(image_dir)
+# image_names = [image_name[:-4] for image_name in image_names if image_name[-4:] == '.jpg']
+
+# # Remove all the points of input_df that are not in the images
+# input_df = input_df[input_df['Name'].isin(image_names)]
 
 output_dir = args.output_dir
 if output_dir[-1] != '/':
@@ -942,28 +986,31 @@ if not os.path.exists(output_dir):
 labels = input_df['Label'].unique()
 if args.generate_eval_images:
     generate_eval_images = True
-    if args.color_dict:
-        color_dict = pd.read_csv(args.color_dict).to_dict()
-        # Get the labels that are in self.color_dict.keys() but not in labels
-        extra_labels = set(color_dict.keys()) - set(labels)
 
-        # Remove the extra labels from color_dict
-        for label in extra_labels:
-            del color_dict[label]
+if args.color_dict:
+    print("color dictionary provided. Loading color_dict...")
+    color_dict = pd.read_csv(args.color_dict).to_dict()
+    # Get the labels that are in self.color_dict.keys() but not in labels
+    extra_labels = set(color_dict.keys()) - set(labels)
 
-        if set(labels) != set(color_dict.keys()):
-            print('Labels in the .csv file and color_dict do not match:')
-            print('     Labels in unique_labels_str but not in color_dict:', set(labels) - set(color_dict.keys()))
-            print('     Labels in color_dict but not in unique_labels_str:', set(color_dict.keys()) - set(labels))
+    # Remove the extra labels from color_dict
+    for label in extra_labels:
+        del color_dict[label]
 
-            print('Creating a new color_dict randomly...')
-            color_dict = create_color_dict(labels, output_dir)
-    else:
+    if set(labels) != set(color_dict.keys()):
+        print('Labels in the .csv file and color_dict do not match:')
+        print('     Labels in unique_labels_str but not in color_dict:', set(labels) - set(color_dict.keys()))
+        print('     Labels in color_dict but not in unique_labels_str:', set(color_dict.keys()) - set(labels))
+
+        print('Creating a new color_dict randomly...')
+        color_dict = create_color_dict(labels, output_dir)
+else:
+    if generate_eval_images:
         print("--color_dict not provided. Colors will be generated randomly.")
         color_dict = create_color_dict(labels, output_dir)
-    
-    # Order unique_labels_str in the way that they appear in color_dict
-    labels = [label for label in color_dict.keys() if label in labels]
+
+# Order unique_labels_str in the way that they appear in color_dict
+labels = [label for label in color_dict.keys() if label in labels]
 
 if args.model == "sam":
     device = "cuda"
