@@ -83,12 +83,6 @@ def blend_translucent_color(img, row, column, color, alpha):
     # Assign the blended color to the pixel
     img[row, column] = blended_color
 
-def kde_subsample(points, bandwidth, subsample_indices):
-    subsample_points = points[subsample_indices]
-    kde = KernelDensity(bandwidth=bandwidth)
-    kde.fit(subsample_points)
-    return kde
-
 def estimate_density(points, bandwidth=1.0, n_jobs=4):
     kde = KernelDensity(bandwidth=bandwidth)
     kde.fit(points)
@@ -98,36 +92,27 @@ def evaluate_density(kde, points):
     densities = np.exp(kde.score_samples(points))
     return densities
 
-def adjust_priority(args):
-    label, priorities, image_df, densities, density_factor, max_priority, density_scale = args
-    label_indices = image_df[image_df['Label'] == label].index
-    label_density = densities[label_indices].mean() * density_scale  # Average density for the label
-    # print (f"Label {label}: density {label_density}")
-    # print(f"Label {label}: priority {priorities[label]}")
-    # print(f"Label {label}: max_priority {max_priority}")
-    # print(f"Label {label}: density_factor {density_factor}")
-    adjusted_priority = max_priority + 1 - priorities[label] + density_factor * label_density
-    # print(f"Label {label}: adjusted_priority {adjusted_priority}")
-    # print('-------------------------------')
-    return label, adjusted_priority
-
 def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
-    priorities = image_df['Label'].value_counts()
-    max_priority = priorities.max()
+    priorities = image_df['Label'].value_counts() / len(image_df)
+    priorities = 1 - priorities
 
-    # print(priorities)
+    label_densities = []
+    for label in priorities.index:
+        label_indices = image_df[image_df['Label'] == label].index
+        label_density = densities[label_indices].mean()
+        label_densities.append(label_density)
+    
+    # Normalize densities so the maximum density is 1
+    max_density = max(label_densities)
+    label_densities = [density / max_density for density in label_densities]
+    # print(f"Densities: {label_densities}")
 
-    # Calculate scaling factor for densities
-    mean_priorities = priorities.mean()
-    std_priorities = priorities.std()
-    mean_densities = densities.mean()
-    std_densities = densities.std()
-
-    density_scale = std_priorities / std_densities if std_densities != 0 else 1
-
-    with mp.Pool(mp.cpu_count()) as pool:
-        args = [(label, priorities, image_df, densities, density_factor, max_priority, density_scale) for label in priorities.index]
-        label_priorities = dict(pool.map(adjust_priority, args))
+    # Adjust priorities with density
+    label_priorities = {}
+    for label, priority, density in zip(priorities.index, priorities, label_densities):
+        label_priorities[label] = priority * (1 - density_factor) + density_factor * density
+    
+    # print(f"Priorities: {label_priorities}")
 
     return label_priorities
 
@@ -190,16 +175,14 @@ def calculate_iou_boxes(segment_data, other_segment_data):
     # Calculate and return IoU
     return intersection_area / union_area, intersection_box
 
-
 def is_point_in_segment(point, segment_data):
     """Check if the point exists in segment_data."""
     return any((segment_data['Row'] == point[1]) & (segment_data['Column'] == point[0]))
     
-
 def merge_labels(image_df, gt_points, gt_labels):
     merged_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
     segments = image_df.groupby('Segment')
-    iou_threshold = 0.5
+    iou_threshold = 0.6
     chosen_segments_by_iou = set()  # Set to keep track of segments chosen by IoU
     points_to_add = []
 
@@ -212,7 +195,7 @@ def merge_labels(image_df, gt_points, gt_labels):
 
                 if iou > iou_threshold:
 
-                    # print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
+                    print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
                     # Initialize counters
                     segment_count = 0
                     other_segment_count = 0
@@ -232,15 +215,13 @@ def merge_labels(image_df, gt_points, gt_labels):
 
                     chosen_segment_id = segment_id if segment_count > other_segment_count else other_segment_id
                     chosen_segment_data = segment_data if segment_count > other_segment_count else other_segment_data
-                    # print(f"Chose segment {chosen_segment_id}. Points in segment {segment_id}: {segment_count}, points in segment {other_segment_id}: {other_segment_count}")
+                    print(f"Chose segment {chosen_segment_id}. Points in segment {segment_id}: {segment_count}, points in segment {other_segment_id}: {other_segment_count}")
                     
                     # concat merged_df with segment data
                     merged_df = pd.concat([merged_df, chosen_segment_data])
                     chosen_segments_by_iou.add(segment_id)
                     chosen_segments_by_iou.add(other_segment_id)
      
-    point_labels = {}
-    label_counts = {}
     unique_labels = np.unique(gt_labels)
     kde_dict = {label: estimate_density(gt_points[gt_labels == label], bandwidth=1.0) for label in unique_labels}
     assigned_densities = np.zeros(len(image_df))
@@ -253,8 +234,15 @@ def merge_labels(image_df, gt_points, gt_labels):
         densities_label = evaluate_density(kde_dict[label], expanded_label_points)
         assigned_densities[label_indices] = densities_label
 
-    label_priorities = adjust_priorities_with_density(image_df, assigned_densities, density_factor=0.5)
+    # Log transform and scale densities
+    # TODO: CALCULAR DENSIDAD TOTAL DE LA IMAGEN. GT / NUMERO TOTAL DE PIXELES. Despues normalizar las densidades con ese valor
+    image_density = len(gt_points) / (image_df['Row'].max() * image_df['Column'].max())
+    normalized_densities = assigned_densities / image_density
 
+    label_priorities = adjust_priorities_with_density(image_df, normalized_densities, density_factor=0.5)
+
+    point_labels = {}
+    label_counts = {}
     for index, row in image_df.iterrows():
         if row['Segment'] in chosen_segments_by_iou:  # Check the set instead of DataFrame
             continue

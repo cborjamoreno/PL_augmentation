@@ -13,7 +13,10 @@ parser.add_argument("-o", "--output_file", help="output csv file name", required
 parser.add_argument("--color_dict", help="color dictionary for labels", default="SUIM_color_dict.csv")
 args = parser.parse_args()
 
-NUM_LABELS = 100
+NUM_LABELS = 300
+
+WIDTH = 640
+HEIGHT = 480
 
 image_pth = args.images_pth
 output_file = args.output_file
@@ -23,39 +26,66 @@ if not os.path.exists(image_pth):
     print("Image path does not exist")
     exit()
 
-
 data = []
+images_processed = 0
+images_with_less_labels = 0
 
 for filename in glob.glob(image_pth + '/*.*'):
     img = cv2.imread(filename)
+    img = cv2.resize(img, (WIDTH, HEIGHT), interpolation=cv2.INTER_NEAREST)
 
     i_size, j_size, _ = img.shape
-    rate = i_size * 1. / j_size  # rate between height and width
-    sqrt = math.sqrt(NUM_LABELS)
-    n_i_points = int(rate * sqrt) + 1  # number of labels per column
-    n_j_points = int(NUM_LABELS / n_i_points) + 1  # number of labels per row
-    space_betw_i = int(i_size / n_i_points)  # space between every label
-    space_betw_j = int(j_size / n_j_points)
-    start_i = int((i_size - space_betw_i * (n_i_points - 1)) / 2)  # pixel to start labeling
-    start_j = int((j_size - space_betw_j * (n_j_points - 1)) / 2)
 
-    for i in range(start_i, n_i_points * space_betw_i, space_betw_i):
-        for j in range(start_j, n_j_points * space_betw_j, space_betw_j):
-            # search the color of img[i, j] in color_dict
-            color = img[i, j]
+    sqrt = math.sqrt((i_size * j_size) / NUM_LABELS)
+    n_i_points = max(int(i_size / sqrt), 1)
+    n_j_points = max(int(j_size / sqrt), 1)
+
+    while n_i_points * n_j_points > NUM_LABELS:
+        if n_i_points > n_j_points:
+            n_i_points -= 1
+        else:
+            n_j_points -= 1
+
+    space_betw_i = i_size / n_i_points
+    space_betw_j = j_size / n_j_points
+
+    generated_labels = 0
+
+    # print('numero de pontos:', n_i_points * n_j_points)
+
+    tolerance = 10  # Define a tolerance level for color matching
+
+    for i in range(n_i_points):
+        for j in range(n_j_points):
+            pos_i = int((i + 0.5) * space_betw_i)
+            pos_j = int((j + 0.5) * space_betw_j)
+
+            # Extract the BGR color at the point (pos_i, pos_j)
+            color = img[pos_i, pos_j]
+
+            # Compare the extracted color with the colors in color_dict_processed
             for key, value in color_dict.items():
                 value_list = list(value.values())
                 value_array = np.array(value_list)
-                # print(color, value_array)
-                if np.array_equal(color, value_array):
+                # Calculate Euclidean distance between the color and value_array
+                distance = np.linalg.norm(color - value_array)
+                # Check if the distance is within the tolerance
+                if distance <= tolerance:
+                    # if distance > 0:
+                        # print(f"Matched color {key} at ({pos_i}, {pos_j}) with distance {distance}")
                     image_name = os.path.basename(filename)
-                    # change the extension of the image name to jpg
+                    # Change the extension of the image name to jpg
                     image_name = os.path.splitext(image_name)[0]
-                    data.append([image_name, i, j, key])
+                    data.append([image_name, pos_i, pos_j, key])
+                    generated_labels += 1
+                    break  # Assuming each point can only match one color
 
-# cv2.destroyAllWindows() 
+    if generated_labels != NUM_LABELS:
+        images_with_less_labels += 1
+    images_processed += 1
+
+print(f"Processed {images_processed} images.")
+print(f"Images with less labels: {images_with_less_labels}")
 
 output_df = pd.DataFrame(data, columns=['Name', 'Row', 'Column', 'Label'])
 output_df.to_csv(output_file, index=False)
-
-
