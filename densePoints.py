@@ -195,7 +195,7 @@ def merge_labels(image_df, gt_points, gt_labels):
 
                 if iou > iou_threshold:
 
-                    print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
+                    # print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
                     # Initialize counters
                     segment_count = 0
                     other_segment_count = 0
@@ -215,7 +215,7 @@ def merge_labels(image_df, gt_points, gt_labels):
 
                     chosen_segment_id = segment_id if segment_count > other_segment_count else other_segment_id
                     chosen_segment_data = segment_data if segment_count > other_segment_count else other_segment_data
-                    print(f"Chose segment {chosen_segment_id}. Points in segment {segment_id}: {segment_count}, points in segment {other_segment_id}: {other_segment_count}")
+                    # print(f"Chose segment {chosen_segment_id}. Points in segment {segment_id}: {segment_count}, points in segment {other_segment_id}: {other_segment_count}")
                     
                     # concat merged_df with segment data
                     merged_df = pd.concat([merged_df, chosen_segment_data])
@@ -644,9 +644,12 @@ class LabelExpander(ABC):
             # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
             mask = np.zeros((image.shape[0], image.shape[1]), dtype=float)
 
+            # unique_labels_str to float values (from 1 to the number of classes)
+            unique_labels_int = np.arange(1, len(unique_labels_str_i) + 1)
+
             # if self.unique_labels_str are integers, use those values as labels
             if isinstance(self.unique_labels_str[0], str):
-                color_mask = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+                color_mask = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
                 mask_color_dir = self.output_dir + 'labels_rgb/'
                 if not os.path.exists(mask_color_dir):
                     os.makedirs(mask_color_dir)
@@ -662,14 +665,12 @@ class LabelExpander(ABC):
                         color_mask[point[0], point[1]] = value_array
                 cv2.imwrite(mask_color_dir+image_name+'_labels_rgb.png', color_mask)
 
-            elif isinstance(self.unique_labels_str[0], np.int64):
-                for i, label in enumerate(self.unique_labels_str, start=1):
-                    aux = expanded_df.iloc[:, 1:3]
-                    expanded_i = expanded_df[expanded_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
-                    for point in expanded_i:
-                        point = point + BORDER_SIZE
-                        mask[point[0], point[1]] = label
-            
+            for i, label in enumerate(unique_labels_int, start=1):
+                aux = expanded_df.iloc[:, 1:3]
+                expanded_i = expanded_df[expanded_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
+                for point in expanded_i:
+                    point = point + BORDER_SIZE
+                    mask[point[0], point[1]] = label
             cv2.imwrite(mask_dir+image_name+'_labels.png', mask)
 
         if self.generate_csv:
@@ -996,9 +997,11 @@ else:
     if generate_eval_images:
         print("--color_dict not provided. Colors will be generated randomly.")
         color_dict = create_color_dict(labels, output_dir)
-
-# Order unique_labels_str in the way that they appear in color_dict
-labels = [label for label in color_dict.keys() if label in labels]
+        # Order unique_labels_str in the way that they appear in color_dict
+        labels = [label for label in color_dict.keys() if label in labels]
+    else:
+        color_dict = None
+        labels = input_df['Label'].unique().tolist()
 
 if args.model == "sam":
     device = "cuda"

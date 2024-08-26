@@ -21,37 +21,34 @@ if not os.path.exists(gt_pth):
     exit()
 
 def calculate_metrics(img, gt):
-    assert img.shape == gt.shape, "Image and GT dimensions do not match"
+    # Exclude background color (64, 0, 64) from calculations
+    background_color = [64, 0, 64]
+    valid_pixels_mask = ~(np.all(gt == background_color, axis=-1))
 
-    # Calculate PA and MPA with all pixels
-    total_pixels = img.reshape(-1, img.shape[-1]).shape[0]
-    pixel_accuracy = np.sum(np.all(gt == img, axis=-1)) / total_pixels
+    # Apply mask to exclude background
+    img_valid = img[valid_pixels_mask]
+    gt_valid = gt[valid_pixels_mask]
 
-    unique_classes = np.unique(gt.reshape(-1, gt.shape[-1]), axis=0)
+    # Calculate PA and MPA excluding background pixels
+    total_valid_pixels = img_valid.reshape(-1, img_valid.shape[-1]).shape[0]
+    pixel_accuracy = np.sum(np.all(gt_valid == img_valid, axis=-1)) / total_valid_pixels if total_valid_pixels > 0 else 0
+
+    unique_classes = np.unique(gt_valid.reshape(-1, gt_valid.shape[-1]), axis=0)
     class_pa = []
 
     for cls in unique_classes:
-        gt_cls = np.all(gt == cls, axis=-1)
-        img_cls = np.all(img == cls, axis=-1)
+        gt_cls = np.all(gt_valid == cls, axis=-1)
+        img_cls = np.all(img_valid == cls, axis=-1)
 
         pa_cls = np.sum(gt_cls & img_cls) / np.sum(gt_cls) if np.sum(gt_cls) != 0 else 0
         class_pa.append(pa_cls)
 
     mean_pa = np.mean(class_pa) if class_pa else 0
 
-    # Exclude black (unlabeled) pixels from both images for MIoU calculation
-    valid_pixels = ~(np.all(gt == [0, 0, 0], axis=-1))
-    img_valid = img[valid_pixels]
-    gt_valid = gt[valid_pixels]
-
-    if img_valid.size == 0 or gt_valid.size == 0:
-        return pixel_accuracy, mean_pa, 0  # No valid pixels to process for MIoU
-
+    # MIoU calculation already excludes background, so no changes needed here
     class_iou = []
 
     for cls in unique_classes:
-        if np.all(cls == [0, 0, 0]):  # Skip background for mIoU calculation
-            continue
         gt_cls = np.all(gt_valid == cls, axis=-1)
         img_cls = np.all(img_valid == cls, axis=-1)
 

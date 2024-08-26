@@ -10,6 +10,9 @@ point-label-aware-superpixels/
 corales/
 mosaic/
 SUIM/
+MosaicsUCSD/
+
+*.csv
 
 # C extensions
 *.so

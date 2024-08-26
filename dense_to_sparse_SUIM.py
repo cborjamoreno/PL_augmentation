@@ -13,7 +13,7 @@ parser.add_argument("-o", "--output_file", help="output csv file name", required
 parser.add_argument("--color_dict", help="color dictionary for labels", default="SUIM_color_dict.csv")
 args = parser.parse_args()
 
-NUM_LABELS = 300
+NUM_LABELS = 100
 
 WIDTH = 640
 HEIGHT = 480
@@ -32,7 +32,7 @@ images_with_less_labels = 0
 
 for filename in glob.glob(image_pth + '/*.*'):
     img = cv2.imread(filename)
-    img = cv2.resize(img, (WIDTH, HEIGHT), interpolation=cv2.INTER_NEAREST)
+    # img = cv2.resize(img, (WIDTH, HEIGHT), interpolation=cv2.INTER_NEAREST)
 
     i_size, j_size, _ = img.shape
 
