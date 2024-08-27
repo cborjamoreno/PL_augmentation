@@ -17,12 +17,15 @@ from scipy.spatial.distance import cdist
 from abc import ABC, abstractmethod
 from sklearn.neighbors import KernelDensity
 import time
+import subprocess
 import multiprocessing as mp
 from sklearn.cluster import KMeans
 from shapely.geometry import Polygon
 from shapely.validation import make_valid
 import torch
 import torchvision
+
+from ML_Superpixels.generate_augmented_GT.generate_augmented_GT_2 import generate_augmented_GT
 
 BORDER_SIZE = 0
 MAX_DISTANCE = 100
@@ -591,12 +594,12 @@ class LabelExpander(ABC):
             
             start_expand = time.time()
             expanded_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, eval_images_dir_i, self.remove_far_points, generate_eval_images=self.generate_eval_images)
-            # print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
+            print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
 
             if self.generate_eval_images:
                 start_generate_image = time.time() 
                 generate_image(expanded_df, image, self.gt_points, self.color_dict, image_name, eval_images_dir_i)
-                # print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
+                print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
 
             if self.generate_csv:
                 
@@ -642,10 +645,10 @@ class LabelExpander(ABC):
                 print(f"Time taken by generate_image: {time.time() - start_generate_csv} seconds")
 
             # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
-            mask = np.zeros((image.shape[0], image.shape[1]), dtype=float)
+            start_generate_labels = time.time()
+            mask = np.zeros((image.shape[0], image.shape[1]), dtype=int)
 
-            # unique_labels_str to float values (from 1 to the number of classes)
-            unique_labels_int = np.arange(1, len(unique_labels_str_i) + 1)
+            unique_labels_int = [int(i) for i in unique_labels_str_i]
 
             # if self.unique_labels_str are integers, use those values as labels
             if isinstance(self.unique_labels_str[0], str):
@@ -672,6 +675,9 @@ class LabelExpander(ABC):
                     point = point + BORDER_SIZE
                     mask[point[0], point[1]] = label
             cv2.imwrite(mask_dir+image_name+'_labels.png', mask)
+            # print a list of all different colors in mask
+
+            print(f"Time taken by generate_labels: {time.time() - start_generate_labels} seconds")
 
         if self.generate_csv:
                 sparse_df.to_csv(self.output_dir + 'sparse.csv', index=False)
@@ -817,7 +823,7 @@ class SAMLabelExpander(LabelExpander):
                 generate_image_per_class(new_data_df, image, _points_pred, _labels_ones, color_dict, image_name, output_dir, unique_labels_str[i])
             
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)            
-            print(f'{len(_points_pred)} {unique_labels_str[i]} points expanded to {len(new_points)}')
+            print(f'{len(_points_pred)} points of class \'{unique_labels_str[i]}\' expanded to {len(new_points)} points')
 
         # Merge the dense labels
         gt_points = self.gt_points - BORDER_SIZE
@@ -846,6 +852,7 @@ class SuperpixelLabelExpander(LabelExpander):
 
     def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
 
+        start_create_sparse_image = time.time()
         # crop the image BORDER_SIZE pixels from each side
         cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
@@ -872,34 +879,44 @@ class SuperpixelLabelExpander(LabelExpander):
 
         _points[:, 0] -= BORDER_SIZE
         _points[:, 1] -= BORDER_SIZE
+
+        filename = image_name.split('.')[0]
+        image_format = image_name.split('.')[-1]
+        print(f"Filename: {filename}, Image format: {image_format}")
         
         sparseImage = self.createSparseImage(_points, _labels, cropped_image.shape)
+        print(f"Time taken by create_sparse_image: {time.time() - start_create_sparse_image} seconds")
 
-        unique_values = np.unique(sparseImage)
-
-        new_filename_path = "ML-Superpixels/"+self.dataset + "/sparse_GT/train/"
+        start_dataset_management = time.time()
+        new_filename_path = "ML_Superpixels/"+self.dataset + "/sparse_GT/train/"
         if not os.path.exists(new_filename_path):
             os.makedirs(new_filename_path)
-        new_filename = new_filename_path + image_name + ".png"
+        new_filename = new_filename_path + filename + '.' + image_format
 
-        # Delete existing dataset with the same name in ML-Superpixels/Datasets
-        if os.path.exists("ML-Superpixels/Datasets/"+self.dataset):
-            shutil.rmtree("ML-Superpixels/Datasets/"+self.dataset)
+        # Delete existing dataset with the same name in ML_Superpixels/Datasets
+        if os.path.exists("ML_Superpixels/Datasets/"+self.dataset):
+            shutil.rmtree("ML_Superpixels/Datasets/"+self.dataset)
 
         # Create a new dataset for the images used
-        os.makedirs("ML-Superpixels/Datasets/"+self.dataset+"/images/train")
-        cv2.imwrite("ML-Superpixels/Datasets/"+self.dataset+"/images/train/"+image_name+".png", cropped_image)
+        os.makedirs("ML_Superpixels/Datasets/"+self.dataset+"/images/train")
+        cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+image_name+".png", cropped_image)
 
         # Save the image
         cv2.imwrite(new_filename, sparseImage)
+        print(f"Time taken by dataset_management: {time.time() - start_dataset_management} seconds")
 
-        # Call Superpixel-Expansion
-        os.system(f"python ML-Superpixels/generate_augmented_GT/generate_augmented_GT.py --dataset ML-Superpixels/Datasets/"+ self.dataset+" --number_levels 15 --start_n_superpixels 3000 --last_n_superpixels 30")
+        start_superpixel_expansion = time.time()
 
+        # os.system(f"python ML_Superpixels/generate_augmented_GT/generate_augmented_GT.py --dataset ML_Superpixels/Datasets/"+ self.dataset+" --number_levels 15 --start_n_superpixels 3000 --last_n_superpixels 30")
+
+        generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, image_format=image_format, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
+
+        print(f"Time taken by superpixel_expansion: {time.time() - start_superpixel_expansion} seconds")
         print("Superpixel expansion done")
 
+        start_to_dataframe = time.time()
         # Load the expanded image in grayscale
-        expanded_image = cv2.imread("ML-Superpixels/"+self.dataset+ "/augmented_GT/train/" + image_name + ".png", cv2.IMREAD_GRAYSCALE)
+        expanded_image = cv2.imread("ML_Superpixels/"+self.dataset+ "/augmented_GT/train/" + filename + '.' + image_format, cv2.IMREAD_GRAYSCALE)
         expanded_image[expanded_image == 255] = 0
 
         _points[:, 0] += BORDER_SIZE
@@ -920,6 +937,7 @@ class SuperpixelLabelExpander(LabelExpander):
             new_data_df = pd.DataFrame(data)
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)
 
+        print(f"Time taken by to_dataframe: {time.time() - start_to_dataframe} seconds")
         return expanded_df
 
 
@@ -927,7 +945,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--input_dir", help="Directory containing images", required=True)
 parser.add_argument("--output_dir", help="Directory to save the output images", required=True)
 parser.add_argument("--ground-truth", help="CSV file containing the points and labels", required=True)
-parser.add_argument("--model", help="Model to use for prediction. If superpixel, the ML-Superpixels folder must be at the same path than this script.", default="sam", choices=["sam", "superpixel"])
+parser.add_argument("--model", help="Model to use for prediction. If superpixel, the ML_Superpixels folder must be at the same path than this script.", default="sam", choices=["sam", "superpixel"])
 parser.add_argument("--dataset", help="Dataset to use for superpixel expansion", required=False)
 parser.add_argument("--max_distance", help="Maximum distance between expanded points and the seed", type=int)
 parser.add_argument("--generate_eval_images", help="Generate evaluation images for the expansion (sparse and expanded images for all the classes)", required=False, action='store_true')
