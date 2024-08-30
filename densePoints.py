@@ -666,7 +666,7 @@ class LabelExpander(ABC):
                         value_list = list(color.values())
                         value_array = np.array(value_list)
                         color_mask[point[0], point[1]] = value_array
-                cv2.imwrite(mask_color_dir+image_name+'_labels_rgb.png', color_mask)
+                cv2.imwrite(mask_color_dir+image_name, color_mask)
 
             for i, label in enumerate(unique_labels_int, start=1):
                 aux = expanded_df.iloc[:, 1:3]
@@ -674,7 +674,7 @@ class LabelExpander(ABC):
                 for point in expanded_i:
                     point = point + BORDER_SIZE
                     mask[point[0], point[1]] = label
-            cv2.imwrite(mask_dir+image_name+'_labels.png', mask)
+            cv2.imwrite(mask_dir+image_name, mask)
             # print a list of all different colors in mask
 
             print(f"Time taken by generate_labels: {time.time() - start_generate_labels} seconds")
