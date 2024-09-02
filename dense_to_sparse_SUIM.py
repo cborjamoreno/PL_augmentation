@@ -13,7 +13,7 @@ parser.add_argument("-o", "--output_file", help="output csv file name", required
 parser.add_argument("--color_dict", help="color dictionary for labels", default="SUIM_color_dict.csv")
 args = parser.parse_args()
 
-NUM_LABELS = 100
+NUM_LABELS = 300
 
 WIDTH = 640
 HEIGHT = 480
@@ -76,6 +76,7 @@ for filename in glob.glob(image_pth + '/*.*'):
                     image_name = os.path.basename(filename)
                     # Change the extension of the image name to jpg
                     image_name = os.path.splitext(image_name)[0]
+                    image_name = image_name + ".jpg"
                     data.append([image_name, pos_i, pos_j, key])
                     generated_labels += 1
                     break  # Assuming each point can only match one color

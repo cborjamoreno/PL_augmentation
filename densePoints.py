@@ -565,11 +565,7 @@ class LabelExpander(ABC):
             os.makedirs(eval_images_dir)
 
         for image_name in self.image_names_csv:
-            
-            if image_name[-4:] != '.png':
-                image_path = os.path.join(self.image_dir, image_name + '.jpg')
-            else:
-                image_path = os.path.join(self.image_dir, image_name)
+            image_path = os.path.join(self.image_dir, image_name)
             print('image_path:', image_path)
             image = cv2.imread(image_path)
 
@@ -648,8 +644,6 @@ class LabelExpander(ABC):
             start_generate_labels = time.time()
             mask = np.zeros((image.shape[0], image.shape[1]), dtype=int)
 
-            unique_labels_int = [int(i) for i in unique_labels_str_i]
-
             # if self.unique_labels_str are integers, use those values as labels
             if isinstance(self.unique_labels_str[0], str):
                 color_mask = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
@@ -667,6 +661,9 @@ class LabelExpander(ABC):
                         value_array = np.array(value_list)
                         color_mask[point[0], point[1]] = value_array
                 cv2.imwrite(mask_color_dir+image_name, color_mask)
+                unique_labels_int = [i for i in range(1, len(unique_labels_str_i) + 1)]
+            else:
+                unique_labels_int = [int(i) for i in unique_labels_str_i]
 
             for i, label in enumerate(unique_labels_int, start=1):
                 aux = expanded_df.iloc[:, 1:3]
@@ -882,7 +879,6 @@ class SuperpixelLabelExpander(LabelExpander):
 
         filename = image_name.split('.')[0]
         image_format = image_name.split('.')[-1]
-        print(f"Filename: {filename}, Image format: {image_format}")
         
         sparseImage = self.createSparseImage(_points, _labels, cropped_image.shape)
         print(f"Time taken by create_sparse_image: {time.time() - start_create_sparse_image} seconds")
@@ -899,7 +895,7 @@ class SuperpixelLabelExpander(LabelExpander):
 
         # Create a new dataset for the images used
         os.makedirs("ML_Superpixels/Datasets/"+self.dataset+"/images/train")
-        cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+image_name+".png", cropped_image)
+        cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+filename+".png", cropped_image)
 
         # Save the image
         cv2.imwrite(new_filename, sparseImage)
