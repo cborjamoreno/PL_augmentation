@@ -25,7 +25,7 @@ from shapely.validation import make_valid
 import torch
 import torchvision
 
-from ML_Superpixels.generate_augmented_GT.generate_augmented_GT_2 import generate_augmented_GT
+from ML_Superpixels.generate_augmented_GT.generate_augmented_GT import generate_augmented_GT
 
 BORDER_SIZE = 0
 MAX_DISTANCE = 100
