@@ -527,9 +527,7 @@ class LabelExpander(ABC):
         self.color_dict = color_dict
         self.input_df = input_df
         self.unique_labels_str = labels
-        self.image_dir = image_dir
         self.image_names_csv = input_df['Name'].unique()
-        self.image_names_dir = os.listdir(image_dir)
         self.output_dir = output_dir
         self.output_df = output_df
         self.gt_points = np.array([])
@@ -537,6 +535,15 @@ class LabelExpander(ABC):
         self.remove_far_points = remove_far_points
         self.generate_eval_images = generate_eval_images
         self.generate_csv = generate_csv
+
+        if '.' in image_dir.split('/')[-1]:
+            self.image_dir = image_dir[:image_dir.rfind('/') + 1]
+            image_name = image_dir.split('/')[-1]
+            self.image_names_csv = [image_name]
+        else:
+            self.image_dir = image_dir
+            self.image_names_dir = os.listdir(image_dir)
+            
         # self.checkMissmatchInFiles()
 
     def checkMissmatchInFiles(self):
@@ -642,7 +649,7 @@ class LabelExpander(ABC):
 
             # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
             start_generate_labels = time.time()
-            mask = np.zeros((image.shape[0], image.shape[1]), dtype=int)
+            mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
 
             # if self.unique_labels_str are integers, use those values as labels
             if isinstance(self.unique_labels_str[0], str):
@@ -671,9 +678,13 @@ class LabelExpander(ABC):
                 for point in expanded_i:
                     point = point + BORDER_SIZE
                     mask[point[0], point[1]] = label
-            cv2.imwrite(mask_dir+image_name, mask)
-            # print a list of all different colors in mask
+            color_mask = cv2.applyColorMap(mask * 63, cv2.COLORMAP_JET)  # Multiply by 63 to spread the values (0-4) across the colormap
+            cv2.imshow('mask', color_mask)
+            cv2.waitKey(0)
+            cv2.imwrite(mask_dir + image_name, mask)
 
+
+            # print('unique labels in output:', np.unique(mask))
             print(f"Time taken by generate_labels: {time.time() - start_generate_labels} seconds")
 
         if self.generate_csv:
@@ -902,8 +913,6 @@ class SuperpixelLabelExpander(LabelExpander):
         print(f"Time taken by dataset_management: {time.time() - start_dataset_management} seconds")
 
         start_superpixel_expansion = time.time()
-
-        # os.system(f"python ML_Superpixels/generate_augmented_GT/generate_augmented_GT.py --dataset ML_Superpixels/Datasets/"+ self.dataset+" --number_levels 15 --start_n_superpixels 3000 --last_n_superpixels 30")
 
         generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, image_format=image_format, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
 
