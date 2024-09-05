@@ -119,7 +119,6 @@ def process_file(filename, out_folder, superpixels_folder, csv_sizes, DEFAULT_VA
             image_gt_new_low = image_superpixels_gt(csv_name, filename, csv_sizes[index], DEFAULT_VALUE)
             image_gt_new[image_gt_new == DEFAULT_VALUE] = image_gt_new_low[image_gt_new == DEFAULT_VALUE]
 
-    # out_dir
     cv2.imwrite(gt_filename, image_gt_new)
 
 def generate_augmented_GT(filename, dataset, default_value, number_levels, start_n_superpixels, last_n_superpixels):

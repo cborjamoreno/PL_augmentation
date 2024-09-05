@@ -680,8 +680,6 @@ class LabelExpander(ABC):
                     mask[point[0], point[1]] = label
             cv2.imwrite(mask_dir + image_name, mask)
 
-
-            # print('unique labels in output:', np.unique(mask))
             print(f"Time taken by generate_labels: {time.time() - start_generate_labels} seconds")
 
         if self.generate_csv:
