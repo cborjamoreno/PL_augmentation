@@ -4,7 +4,8 @@ __pycache__/
 *$py.class
 
 Sebens_MA_LTM/
-ML_Superpixels/
+ML_Superpixels/bin/
+ML_Superpixels/Datasets/
 Krumhansl/
 point-label-aware-superpixels/
 corales/

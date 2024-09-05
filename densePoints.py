@@ -678,9 +678,6 @@ class LabelExpander(ABC):
                 for point in expanded_i:
                     point = point + BORDER_SIZE
                     mask[point[0], point[1]] = label
-            color_mask = cv2.applyColorMap(mask * 63, cv2.COLORMAP_JET)  # Multiply by 63 to spread the values (0-4) across the colormap
-            cv2.imshow('mask', color_mask)
-            cv2.waitKey(0)
             cv2.imwrite(mask_dir + image_name, mask)
 
 
@@ -889,24 +886,25 @@ class SuperpixelLabelExpander(LabelExpander):
         _points[:, 1] -= BORDER_SIZE
 
         filename = image_name.split('.')[0]
-        image_format = image_name.split('.')[-1]
+        filename = filename + '.png'
         
         sparseImage = self.createSparseImage(_points, _labels, cropped_image.shape)
         print(f"Time taken by create_sparse_image: {time.time() - start_create_sparse_image} seconds")
-
-        start_dataset_management = time.time()
-        new_filename_path = "ML_Superpixels/"+self.dataset + "/sparse_GT/train/"
-        if not os.path.exists(new_filename_path):
-            os.makedirs(new_filename_path)
-        new_filename = new_filename_path + filename + '.' + image_format
 
         # Delete existing dataset with the same name in ML_Superpixels/Datasets
         if os.path.exists("ML_Superpixels/Datasets/"+self.dataset):
             shutil.rmtree("ML_Superpixels/Datasets/"+self.dataset)
 
+        start_dataset_management = time.time()
+        new_filename_path = "ML_Superpixels/Datasets/"+self.dataset + "/sparse_GT/train/"
+        if not os.path.exists(new_filename_path):
+            os.makedirs(new_filename_path)
+        new_filename = new_filename_path + filename
+
+
         # Create a new dataset for the images used
         os.makedirs("ML_Superpixels/Datasets/"+self.dataset+"/images/train")
-        cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+filename+".png", cropped_image)
+        cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+filename, cropped_image)
 
         # Save the image
         cv2.imwrite(new_filename, sparseImage)
@@ -914,14 +912,14 @@ class SuperpixelLabelExpander(LabelExpander):
 
         start_superpixel_expansion = time.time()
 
-        generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, image_format=image_format, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
+        generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
 
         print(f"Time taken by superpixel_expansion: {time.time() - start_superpixel_expansion} seconds")
         print("Superpixel expansion done")
 
         start_to_dataframe = time.time()
         # Load the expanded image in grayscale
-        expanded_image = cv2.imread("ML_Superpixels/"+self.dataset+ "/augmented_GT/train/" + filename + '.' + image_format, cv2.IMREAD_GRAYSCALE)
+        expanded_image = cv2.imread("ML_Superpixels/Datasets/"+self.dataset+ "/augmented_GT/train/" + filename, cv2.IMREAD_GRAYSCALE)
         expanded_image[expanded_image == 255] = 0
 
         _points[:, 0] += BORDER_SIZE
