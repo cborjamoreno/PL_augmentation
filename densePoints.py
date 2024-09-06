@@ -198,27 +198,46 @@ def merge_labels(image_df, gt_points, gt_labels):
 
                 if iou > iou_threshold:
 
-                    # print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
+                    print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
+
                     # Initialize counters
-                    segment_count = 0
-                    other_segment_count = 0
+                    segment_count_right = 0
+                    segment_count_wrong = 0
+                    other_segment_count_right = 0
+                    other_segment_count_wrong = 0
+
+                    label_segment = segment_data['Label'].iloc[0]
+                    label_other_segment = other_segment_data['Label'].iloc[0]
 
                     # get gt points that belongs to each class
-                    gt_points_label_segment = gt_points[gt_labels == segment_data['Label'].iloc[0]]
-                    gt_points_label_other_segment = gt_points[gt_labels == other_segment_data['Label'].iloc[0]]
+                    gt_points_label_segment = gt_points[gt_labels == label_segment]
+                    gt_points_label_other_segment = gt_points[gt_labels == label_other_segment]
+
+                    #plot segment_data points and other_segment_data points
+                    # plt.scatter(other_segment_data['Column'], -other_segment_data['Row'], color='red')
+                    # plt.scatter(segment_data['Column'], -segment_data['Row'], color='blue')
+                    # plt.show()
 
                     # Count the number of gt points inide each segment
                     for point in gt_points_label_segment:
                         if is_point_in_segment(point, segment_data):
-                            segment_count += 1
+                            segment_count_right += 1
+                        elif is_point_in_segment(point, other_segment_data):
+                            segment_count_wrong += 1
                     
                     for point in gt_points_label_other_segment:
                         if is_point_in_segment(point, other_segment_data):
-                            other_segment_count += 1
+                            other_segment_count_right += 1
+                        elif is_point_in_segment(point, segment_data):
+                            segment_count_wrong += 1
+                    
+                    difference_segement = segment_count_right - segment_count_wrong
+                    difference_other_segment = other_segment_count_right - other_segment_count_wrong
+                    
 
-                    chosen_segment_id = segment_id if segment_count > other_segment_count else other_segment_id
-                    chosen_segment_data = segment_data if segment_count > other_segment_count else other_segment_data
-                    # print(f"Chose segment {chosen_segment_id}. Points in segment {segment_id}: {segment_count}, points in segment {other_segment_id}: {other_segment_count}")
+                    chosen_segment_id = other_segment_id if difference_segement > difference_other_segment else segment_id
+                    chosen_segment_data = other_segment_data if difference_segement > difference_other_segment else segment_data
+                    print(f"Chose segment {chosen_segment_id} with label {chosen_segment_data['Label'].iloc[0]}, difference_segment: {difference_segement}, difference_other_segment: {difference_other_segment}")
                     
                     # concat merged_df with segment data
                     merged_df = pd.concat([merged_df, chosen_segment_data])
