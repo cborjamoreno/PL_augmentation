@@ -198,7 +198,7 @@ def merge_labels(image_df, gt_points, gt_labels):
 
                 if iou > iou_threshold:
 
-                    print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
+                    # print(f"Segments {segment_id} of label {segment_data['Label'].iloc[0]} and {other_segment_id} of label {other_segment_data['Label'].iloc[0]} have IoU {iou}")
 
                     # Initialize counters
                     segment_count_right = 0
@@ -209,9 +209,9 @@ def merge_labels(image_df, gt_points, gt_labels):
                     label_segment = segment_data['Label'].iloc[0]
                     label_other_segment = other_segment_data['Label'].iloc[0]
 
-                    # get gt points that belongs to each class
-                    gt_points_label_segment = gt_points[gt_labels == label_segment]
-                    gt_points_label_other_segment = gt_points[gt_labels == label_other_segment]
+                    # Get gt points that belong to each class and save their labels
+                    gt_points_in_segment = [(point, gt_labels[idx]) for idx, point in enumerate(gt_points) if is_point_in_segment(point, segment_data)]
+                    gt_points_in_other_segment = [(point, gt_labels[idx]) for idx, point in enumerate(gt_points) if is_point_in_segment(point, other_segment_data)]
 
                     #plot segment_data points and other_segment_data points
                     # plt.scatter(other_segment_data['Column'], -other_segment_data['Row'], color='red')
@@ -219,25 +219,28 @@ def merge_labels(image_df, gt_points, gt_labels):
                     # plt.show()
 
                     # Count the number of gt points inide each segment
-                    for point in gt_points_label_segment:
-                        if is_point_in_segment(point, segment_data):
+                    for _, label in gt_points_in_segment:
+                        if label == label_segment:
                             segment_count_right += 1
-                        elif is_point_in_segment(point, other_segment_data):
+                        else:
                             segment_count_wrong += 1
                     
-                    for point in gt_points_label_other_segment:
-                        if is_point_in_segment(point, other_segment_data):
+                    for _, label in gt_points_in_other_segment:
+                        if label == label_other_segment:
                             other_segment_count_right += 1
-                        elif is_point_in_segment(point, segment_data):
-                            segment_count_wrong += 1
+                        else:
+                            other_segment_count_wrong += 1
                     
                     difference_segement = segment_count_right - segment_count_wrong
+                    # print(f"Segment {segment_id} with label {segment_data['Label'].iloc[0]} has {segment_count_right} right points and {segment_count_wrong} wrong points")
+                    # print(f"Difference segment: {difference_segement}")
                     difference_other_segment = other_segment_count_right - other_segment_count_wrong
-                    
+                    # print(f"Other Segment {other_segment_id} with label {other_segment_data['Label'].iloc[0]} has {other_segment_count_right} right points and {other_segment_count_wrong} wrong points")
+                    # print(f"Difference other segment: {difference_other_segment}")
 
-                    chosen_segment_id = other_segment_id if difference_segement > difference_other_segment else segment_id
-                    chosen_segment_data = other_segment_data if difference_segement > difference_other_segment else segment_data
-                    print(f"Chose segment {chosen_segment_id} with label {chosen_segment_data['Label'].iloc[0]}, difference_segment: {difference_segement}, difference_other_segment: {difference_other_segment}")
+                    chosen_segment_id = segment_id if difference_segement > difference_other_segment else other_segment_id
+                    chosen_segment_data = segment_data if difference_segement > difference_other_segment else other_segment_data
+                    # print(f"Chose segment {chosen_segment_id} with label {chosen_segment_data['Label'].iloc[0]}, difference_segment: {difference_segement}, difference_other_segment: {difference_other_segment}")
                     
                     # concat merged_df with segment data
                     merged_df = pd.concat([merged_df, chosen_segment_data])
@@ -590,6 +593,8 @@ class LabelExpander(ABC):
         if not os.path.exists(eval_images_dir):
             os.makedirs(eval_images_dir)
 
+        processed_images = 0
+
         for image_name in self.image_names_csv:
             image_path = os.path.join(self.image_dir, image_name)
             print('image_path:', image_path)
@@ -699,7 +704,7 @@ class LabelExpander(ABC):
                     mask[point[0], point[1]] = label
             cv2.imwrite(mask_dir + image_name, mask)
 
-            print(f"Time taken by generate_labels: {time.time() - start_generate_labels} seconds")
+            print(f"{processed_images + 1}/{len(self.image_names_csv)}")
 
         if self.generate_csv:
                 sparse_df.to_csv(self.output_dir + 'sparse.csv', index=False)
@@ -854,8 +859,8 @@ class SAMLabelExpander(LabelExpander):
         return merged_df
 
 class SuperpixelLabelExpander(LabelExpander):
-    def __init__(self, dataset, color_dict, input_df, labels, image_dir, output_df, output_dir, remove_far_points=False, generate_eval_images=False, generate_csv=False):
-        super().__init__(color_dict, input_df, labels, image_dir, output_df, output_dir, remove_far_points, generate_eval_images, generate_csv)
+    def __init__(self, dataset, color_dict, input_df, labels, image_dir, gt_dir, output_df, output_dir, remove_far_points=False, generate_eval_images=False, generate_csv=False):
+        super().__init__(color_dict, input_df, labels, image_dir, gt_dir, output_df, output_dir, remove_far_points, generate_eval_images, generate_csv)
         self.dataset = dataset
 
     def createSparseImage(self, points, labels, image_shape=(1000, 1000)):
@@ -964,7 +969,7 @@ class SuperpixelLabelExpander(LabelExpander):
 parser = argparse.ArgumentParser()
 parser.add_argument("--input_dir", help="Directory containing images", required=True)
 parser.add_argument("--output_dir", help="Directory to save the output images", required=True)
-parser.add_argument("--ground-truth", help="CSV file containing the points and labels", required=True)
+parser.add_argument("-gt","--ground_truth", help="CSV file containing the points and labels", required=True)
 parser.add_argument("--model", help="Model to use for prediction. If superpixel, the ML_Superpixels folder must be at the same path than this script.", default="sam", choices=["sam", "superpixel"])
 parser.add_argument("--dataset", help="Dataset to use for superpixel expansion", required=False)
 parser.add_argument("--max_distance", help="Maximum distance between expanded points and the seed", type=int)
