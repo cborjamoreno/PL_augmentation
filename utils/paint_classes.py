@@ -53,6 +53,11 @@ rgb_image_2 = apply_color_mapping(image_path_2, color_mapping)
 rgb_image_3 = apply_color_mapping(image_path_3, color_mapping)
 
 # Display the images
-rgb_image_1.show()
-rgb_image_2.show()
-rgb_image_3.show()
+# rgb_image_1.show()
+# rgb_image_2.show()
+# rgb_image_3.show()
+
+# Save the images
+rgb_image_1.save('color_sam.png')
+rgb_image_2.save('color_superpixel.png')
+rgb_image_3.save('color_gt.png')
