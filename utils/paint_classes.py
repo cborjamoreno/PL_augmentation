@@ -41,16 +41,18 @@ def apply_color_mapping(image_path, color_mapping):
 
 # Example usage
 image_path_1 = 'MosaicsUCSD/MosaicsUCSD_sam_100/labels/FR3_512_1024_1536_2048.png'
-image_path_2 = 'MosaicsUCSD/MosaicsUCSD_superpixel_100/labels/FR3_512_1024_1536_2048.png'
-image_path_3 = '../MosaicsUCSD/train/labels/FR3_512_1024_1536_2048.png'
+# image_path_2 = 'MosaicsUCSD/MosaicsUCSD_superpixel_100/labels/FR3_512_1024_1536_2048.png'
+image_path_3 = 'MosaicsUCSD/MosaicsUCSD_mixed_100/labels/FR3_512_1024_1536_2048.png'
+image_path_4 = '../MosaicsUCSD/train/labels/FR3_512_1024_1536_2048.png'
 
 # Create color mapping from the first image
 color_mapping = create_color_mapping(image_path_1)
 
 # Apply the same color mapping to the second and third images
 rgb_image_1 = apply_color_mapping(image_path_1, color_mapping)
-rgb_image_2 = apply_color_mapping(image_path_2, color_mapping)
+# rgb_image_2 = apply_color_mapping(image_path_2, color_mapping)
 rgb_image_3 = apply_color_mapping(image_path_3, color_mapping)
+rgb_image_4 = apply_color_mapping(image_path_4, color_mapping)
 
 # Display the images
 # rgb_image_1.show()
@@ -59,5 +61,6 @@ rgb_image_3 = apply_color_mapping(image_path_3, color_mapping)
 
 # Save the images
 rgb_image_1.save('color_sam.png')
-rgb_image_2.save('color_superpixel.png')
-rgb_image_3.save('color_gt.png')
+# rgb_image_2.save('color_superpixel.png')
+rgb_image_3.save('color_mixed.png')
+rgb_image_4.save('color_gt.png')

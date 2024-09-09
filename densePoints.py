@@ -762,8 +762,6 @@ class SAMLabelExpander(LabelExpander):
         gt_points = self.gt_points - BORDER_SIZE
         merged_df = merge_labels(expanded_df, gt_points, self.gt_labels)
 
-        merged_df = merged_df.drop(columns=['Segment'])
-
         return merged_df
 
 class SuperpixelLabelExpander(LabelExpander):
@@ -895,9 +893,10 @@ if args.max_distance:
     MAX_DISTANCE = args.max_distance
     remove_far_points = True
 
-image_dir = args.input_dir
-if not os.path.exists(image_dir):
-    parser.error(f"The directory {image_dir} does not exist")
+image_path = args.input_dir
+print("Image directory:", image_path)
+if not os.path.exists(image_path):
+    parser.error(f"The directory {image_path} does not exist")
 
 if args.frame:
     BORDER_SIZE = args.frame
@@ -978,12 +977,12 @@ processed_images = 0
 
 image_names_csv = input_df['Name'].unique()
 
-if '.' in image_dir.split('/')[-1]:
-    image_dir = image_dir[:image_dir.rfind('/') + 1]
-    image_name = image_dir.split('/')[-1]
+if '.' in image_path.split('/')[-1]:
+    image_dir = image_path[:image_path.rfind('/') + 1]
+    image_name = image_path.split('/')[-1]
     image_names_csv = [image_name]
 else:
-    image_dir = image_dir
+    image_dir = image_path
     image_names_dir = os.listdir(image_dir)
 
 # checkMissmatchInFiles(image_names_csv, os.listdir(image_dir))
@@ -1010,7 +1009,7 @@ for image_name in image_names_csv:
     elif args.model == "superpixel":
         output_df = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i)
     elif args.model == "mixed":
-        print("Expanding labels with SAM...")
+        print("\nExpanding labels with SAM...")
         expanded_sam = LabelExpander_sam.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
         print("\nExpanding labels with Superpixels...")
         expanded_spx = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
@@ -1019,9 +1018,22 @@ for image_name in image_names_csv:
         expanded_sam = expanded_sam.drop_duplicates(subset=["Row", "Column"])
         expanded_spx = expanded_spx.drop_duplicates(subset=["Row", "Column"])
 
-        merged_df = expanded_spx.merge(expanded_sam, on=["Row", "Column"], how='left', indicator=True)
-        points_not_in_sam = merged_df[merged_df['_merge'] == 'left_only'].drop(columns=['_merge'])
+        # Merge expanded_spx with expanded_sam on Row and Column only
+        merged_df = expanded_spx.merge(expanded_sam, on=["Row", "Column"], how='left', indicator=True, suffixes=('_spx', '_sam'))
+
+        # Filter merged_df to get points that are only in expanded_spx
+        points_not_in_sam = merged_df[merged_df['_merge'] == 'left_only'].drop(columns=['_merge', 'Label_sam'])
+
+        # Rename the Label column to match the original
+        points_not_in_sam = points_not_in_sam.rename(columns={'Label_spx': 'Label'})
+
+        # Concatenate expanded_sam with points_not_in_sam and remove duplicates based on Row and Column
         output_df = pd.concat([expanded_sam, points_not_in_sam], ignore_index=True).drop_duplicates(subset=["Row", "Column"])
+
+        print(f"Number of points in expanded_sam: {len(expanded_sam)}")
+        print(f"Number of points in expanded_spx: {len(expanded_spx)}")
+        print(f"Number of points not in sam: {len(points_not_in_sam)}")
+        print(f"Number of points in output_df: {len(output_df)}")
 
     print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
     mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
