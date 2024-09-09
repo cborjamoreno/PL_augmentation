@@ -544,13 +544,25 @@ def plot_mosaic(image, image_labels, results_path):
     plt.savefig(results_path + 'mosaic.png', bbox_inches='tight', pad_inches=0)
     plt.show()
 
+def checkMissmatchInFiles(image_names_csv, image_names_dir):
+    # Print images in .csv that are not in the image directory
+    for image_name in image_names_csv:
+        if image_name + '.jpg' not in image_names_dir:
+            print(f"Image {image_name} in .csv but not in image directory")
+
+    # Print images in the image directory that are not in the .csv
+    for image_name in image_names_dir:
+        if image_name[:-4] not in image_names_csv:
+            print(f"Image {image_name} in image directory but not in .csv")
+    
+    print("Done checking missmatch in files!\n\n")
+
 class LabelExpander(ABC):
-    def __init__(self, color_dict, input_df, labels, image_dir, output_df, output_dir, remove_far_points=False, generate_eval_images=False, get_sparse_csv=False): 
+    def __init__(self, color_dict, input_df, labels, output_df): 
         self.color_dict = color_dict
         self.input_df = input_df
         self.unique_labels_str = labels
         self.image_names_csv = input_df['Name'].unique()
-        self.output_dir = output_dir
         self.output_df = output_df
         self.gt_points = np.array([])
         self.gt_labels = np.array([])
@@ -558,171 +570,74 @@ class LabelExpander(ABC):
         self.generate_eval_images = generate_eval_images
         self.generate_csv = generate_csv
 
-        if '.' in image_dir.split('/')[-1]:
-            self.image_dir = image_dir[:image_dir.rfind('/') + 1]
-            image_name = image_dir.split('/')[-1]
-            self.image_names_csv = [image_name]
-        else:
-            self.image_dir = image_dir
-            self.image_names_dir = os.listdir(image_dir)
-            
-        # self.checkMissmatchInFiles()
+    def generate_csv(self):
+        # TODO: 
+        pass
 
-    def checkMissmatchInFiles(self):
-        # Print images in .csv that are not in the image directory
-        for image_name in self.image_names_csv:
-            if image_name + '.jpg' not in self.image_names_dir:
-                print(f"Image {image_name} in .csv but not in image directory")
-
-        # Print images in the image directory that are not in the .csv
-        for image_name in self.image_names_dir:
-            if image_name[:-4] not in self.image_names_csv:
-                print(f"Image {image_name} in image directory but not in .csv")
-
-    def expand_images(self):
-        start_expand_images = time.time()
+    def expand_image(self, unique_labels_str_i, image, eval_images_dir_i):      
+        expanded_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, eval_images_dir_i)
+        
+        if self.generate_eval_images:
+            start_generate_image = time.time() 
+            generate_image(expanded_df, image, self.gt_points, self.color_dict, image_name, eval_images_dir_i)
+            print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
 
         if self.generate_csv:
-            sparse_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
-        
-        mask_dir = self.output_dir + 'labels/'
-        if not os.path.exists(mask_dir):
-            os.makedirs(mask_dir)
-
-        eval_images_dir = self.output_dir + 'eval_images/'
-        if not os.path.exists(eval_images_dir):
-            os.makedirs(eval_images_dir)
-
-        processed_images = 0
-
-        for image_name in self.image_names_csv:
-            image_path = os.path.join(self.image_dir, image_name)
-            print('image_path:', image_path)
-            image = cv2.imread(image_path)
-
-            if image is None:
-                continue
-
-            print('Expanding labels for', image_name, '...')
-
-            points = self.input_df[self.input_df['Name'] == image_name].iloc[:, 1:3].to_numpy().astype(int)
-            labels = self.input_df[self.input_df['Name'] == image_name].iloc[:, 3].to_numpy()
-            unique_labels_str_i = np.unique(labels)
-
-            eval_images_dir_i = eval_images_dir + image_name + '/'
-
-            # reset gt_points and gt_labels
-            self.gt_points = np.array([])
-            self.gt_labels = np.array([])
-
-            if image is None:
-                print(f"Failed to load image at {image_path}")
-                continue
             
-            start_expand = time.time()
-            expanded_df = self.expand_labels(points, labels, unique_labels_str_i, image, image_name, eval_images_dir_i, self.remove_far_points, generate_eval_images=self.generate_eval_images)
-            print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
+            start_generate_csv = time.time()
+            # TODO: Perform Kmeans clustering separately for each class
+            if not image_df.empty:
+                num_clusters = len(unique_labels_str_i)
+                kmeans = KMeans(n_clusters=num_clusters)
+                image_df['Cluster'] = kmeans.fit_predict(image_df[['Row', 'Column']])
 
-            if self.generate_eval_images:
-                start_generate_image = time.time() 
-                generate_image(expanded_df, image, self.gt_points, self.color_dict, image_name, eval_images_dir_i)
-                print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
+                # Count the number of points in each cluster
+                cluster_counts = image_df['Cluster'].value_counts()
 
-            if self.generate_csv:
-                
-                start_generate_csv = time.time()
-                # TODO: Perform Kmeans clustering separately for each class
-                if not image_df.empty:
-                    num_clusters = len(unique_labels_str_i)
-                    kmeans = KMeans(n_clusters=num_clusters)
-                    image_df['Cluster'] = kmeans.fit_predict(image_df[['Row', 'Column']])
+                # Calculate the sampling rate for each class (inverse of class count)
+                sampling_rates = 1 / cluster_counts
 
-                    # Count the number of points in each cluster
-                    cluster_counts = image_df['Cluster'].value_counts()
+                # Normalize the sampling rates so that they sum up to 1
+                sampling_rates = sampling_rates / sampling_rates.sum()
 
-                    # Calculate the sampling rate for each class (inverse of class count)
-                    sampling_rates = 1 / cluster_counts
+                # Calculate the number of points to sample from each class
+                points_per_cluster = (sampling_rates * 950).round().astype(int)
 
-                    # Normalize the sampling rates so that they sum up to 1
-                    sampling_rates = sampling_rates / sampling_rates.sum()
+                # Create an empty DataFrame to store the sampled points
+                sampled_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
 
-                    # Calculate the number of points to sample from each class
-                    points_per_cluster = (sampling_rates * 950).round().astype(int)
+                # Sample points from each cluster
+                for cluster in image_df['Cluster'].unique():
+                    cluster_points = image_df[image_df['Cluster'] == cluster]
+                    num_points = points_per_cluster[cluster]
+                    sampled_points = cluster_points.sample(min(len(cluster_points), num_points))
+                    sampled_df = pd.concat([sampled_df, sampled_points])
 
-                    # Create an empty DataFrame to store the sampled points
-                    sampled_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
-
-                    # Sample points from each cluster
-                    for cluster in image_df['Cluster'].unique():
-                        cluster_points = image_df[image_df['Cluster'] == cluster]
-                        num_points = points_per_cluster[cluster]
-                        sampled_points = cluster_points.sample(min(len(cluster_points), num_points))
-                        sampled_df = pd.concat([sampled_df, sampled_points])
-
-                    # If there are still points left to sample, sample randomly from the entire DataFrame
-                    if len(sampled_df) < 950:
-                        remaining_points = 950 - len(sampled_df)
-                        additional_points = image_df.sample(remaining_points)
-                        sampled_df = pd.concat([sampled_df, additional_points])
-                        
-                    sparse_df = pd.concat([sparse_df, sampled_df])
-                else:
-                    print("Warning: image_df is empty. Skipping KMeans clustering and sampling.")
-                
-                print(f"Time taken by generate_image: {time.time() - start_generate_csv} seconds")
-
-            # plot each of the classes of the image in grayscale from 1 to the number of classes. 0 is for the pixeles that are not in any class
-            start_generate_labels = time.time()
-            mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-
-            # if self.unique_labels_str are integers, use those values as labels
-            if isinstance(self.unique_labels_str[0], str):
-                color_mask = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
-                mask_color_dir = self.output_dir + 'labels_rgb/'
-                if not os.path.exists(mask_color_dir):
-                    os.makedirs(mask_color_dir)
-                for i, label in enumerate(self.unique_labels_str, start=1):
-                    aux = expanded_df.iloc[:, 1:3]
-                    expanded_i = expanded_df[expanded_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
-                    color = self.color_dict[label]  # Retrieve the RGB color for the current label
-                    for point in expanded_i:
-                        point = point + BORDER_SIZE
-                        mask[point[0], point[1]] = i  # Assign grayscale value to mask
-                        value_list = list(color.values())
-                        value_array = np.array(value_list)
-                        color_mask[point[0], point[1]] = value_array
-                cv2.imwrite(mask_color_dir+image_name, color_mask)
-                unique_labels_int = [i for i in range(1, len(unique_labels_str_i) + 1)]
+                # If there are still points left to sample, sample randomly from the entire DataFrame
+                if len(sampled_df) < 950:
+                    remaining_points = 950 - len(sampled_df)
+                    additional_points = image_df.sample(remaining_points)
+                    sampled_df = pd.concat([sampled_df, additional_points])
+                    
+                sparse_df = pd.concat([sparse_df, sampled_df])
             else:
-                unique_labels_int = [int(i) for i in unique_labels_str_i]
+                print("Warning: image_df is empty. Skipping KMeans clustering and sampling.")
+            
+            print(f"Time taken by generate_image: {time.time() - start_generate_csv} seconds")
 
-            for i, label in enumerate(unique_labels_int, start=1):
-                aux = expanded_df.iloc[:, 1:3]
-                expanded_i = expanded_df[expanded_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
-                for point in expanded_i:
-                    point = point + BORDER_SIZE
-                    mask[point[0], point[1]] = label
-            cv2.imwrite(mask_dir + image_name, mask)
-
-            print(f"{processed_images + 1}/{len(self.image_names_csv)}")
-
-        if self.generate_csv:
-                sparse_df.to_csv(self.output_dir + 'sparse.csv', index=False)
-        
-        print(f"Time taken by expand_images: {time.time() - start_expand_images} seconds")
-        print('Done!\n\n')
+        return expanded_df
         
     @abstractmethod
-    def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
+    def expand_labels(self, points, labels, unique_labels_str, image, image_name, eval_image_dir=None):
         pass
 
 class SAMLabelExpander(LabelExpander):
-    def __init__(self, color_dict, input_df, labels, image_dir, output_df, output_dir, predictor, remove_far_points=False, generate_eval_images=False, generate_csv=False):
-        super().__init__(color_dict, input_df, labels, image_dir, output_df, output_dir, remove_far_points, generate_eval_images, generate_csv)
+    def __init__(self, color_dict, input_df, labels, output_df, predictor, generate_eval_images=False):
+        super().__init__(color_dict, input_df, labels, output_df)
         self.predictor = predictor
+        self.generate_eval_images = generate_eval_images
         
-
-    def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
+    def expand_labels(self, points, labels, unique_labels_str, image, image_name, eval_image_dir=None):
         expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label", "Segment"])
 
         # crop the image BORDER_SIZE pixels from each side
@@ -810,15 +725,10 @@ class SAMLabelExpander(LabelExpander):
                     multimask_output=True,
                 )
 
-                # print(f"Time taken by predict: {time.time() - start} seconds")
-
-                # Increment the segment counter for each new mask
                 segment_counter += 1
 
                 # Determine new points for the current mask
                 new_points = np.argwhere(mask[0])
-
-                start = time.time()
 
                 # Step 1: Create a set for existing points for the specific label
                 existing_points = {(d["Row"], d["Column"]) for d in data if d["Label"] == label_str}
@@ -836,18 +746,14 @@ class SAMLabelExpander(LabelExpander):
                         })
                         # Step 4: Add the new point to the set
                         existing_points.add((point[0], point[1]))
-                    
-                # if label_str == 3 or label_str == 24:
-                #     segment_df = pd.DataFrame(data)
-                #     generate_image_per_segment(segment_df, segment_counter, image, _points_pred, _labels_ones, self.color_dict, image_name, output_dir, unique_labels_str[i])
 
             _points_pred[:, 0] += BORDER_SIZE
             _points_pred[:, 1] += BORDER_SIZE
 
             new_data_df = pd.DataFrame(data)
             
-            if generate_eval_images:
-                generate_image_per_class(new_data_df, image, _points_pred, _labels_ones, color_dict, image_name, output_dir, unique_labels_str[i])
+            if self.generate_eval_images:
+                generate_image_per_class(new_data_df, image, _points_pred, _labels_ones, color_dict, image_name, eval_image_dir, unique_labels_str[i])
             
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)            
             print(f'{len(_points_pred)} points of class \'{unique_labels_str[i]}\' expanded to {len(new_points)} points')
@@ -856,11 +762,13 @@ class SAMLabelExpander(LabelExpander):
         gt_points = self.gt_points - BORDER_SIZE
         merged_df = merge_labels(expanded_df, gt_points, self.gt_labels)
 
+        merged_df = merged_df.drop(columns=['Segment'])
+
         return merged_df
 
 class SuperpixelLabelExpander(LabelExpander):
-    def __init__(self, dataset, color_dict, input_df, labels, image_dir, gt_dir, output_df, output_dir, remove_far_points=False, generate_eval_images=False, generate_csv=False):
-        super().__init__(color_dict, input_df, labels, image_dir, gt_dir, output_df, output_dir, remove_far_points, generate_eval_images, generate_csv)
+    def __init__(self, dataset, color_dict, input_df, labels, output_df):
+        super().__init__(color_dict, input_df, labels, output_df)
         self.dataset = dataset
 
     def createSparseImage(self, points, labels, image_shape=(1000, 1000)):
@@ -877,9 +785,8 @@ class SuperpixelLabelExpander(LabelExpander):
 
         return sparse_image
 
-    def expand_labels(self, points, labels, unique_labels_str, image, image_name, output_dir, remove_far_points=False, generate_eval_images=False):
+    def expand_labels(self, points, labels, unique_labels_str, image, image_name, eval_image_dir=None):
 
-        start_create_sparse_image = time.time()
         # crop the image BORDER_SIZE pixels from each side
         cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
@@ -911,7 +818,6 @@ class SuperpixelLabelExpander(LabelExpander):
         filename = filename + '.png'
         
         sparseImage = self.createSparseImage(_points, _labels, cropped_image.shape)
-        print(f"Time taken by create_sparse_image: {time.time() - start_create_sparse_image} seconds")
 
         # Delete existing dataset with the same name in ML_Superpixels/Datasets
         if os.path.exists("ML_Superpixels/Datasets/"+self.dataset):
@@ -923,7 +829,6 @@ class SuperpixelLabelExpander(LabelExpander):
             os.makedirs(new_filename_path)
         new_filename = new_filename_path + filename
 
-
         # Create a new dataset for the images used
         os.makedirs("ML_Superpixels/Datasets/"+self.dataset+"/images/train")
         cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+filename, cropped_image)
@@ -932,14 +837,10 @@ class SuperpixelLabelExpander(LabelExpander):
         cv2.imwrite(new_filename, sparseImage)
         print(f"Time taken by dataset_management: {time.time() - start_dataset_management} seconds")
 
-        start_superpixel_expansion = time.time()
-
         generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
 
-        print(f"Time taken by superpixel_expansion: {time.time() - start_superpixel_expansion} seconds")
         print("Superpixel expansion done")
 
-        start_to_dataframe = time.time()
         # Load the expanded image in grayscale
         expanded_image = cv2.imread("ML_Superpixels/Datasets/"+self.dataset+ "/augmented_GT/train/" + filename, cv2.IMREAD_GRAYSCALE)
         expanded_image[expanded_image == 255] = 0
@@ -962,7 +863,6 @@ class SuperpixelLabelExpander(LabelExpander):
             new_data_df = pd.DataFrame(data)
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)
 
-        print(f"Time taken by to_dataframe: {time.time() - start_to_dataframe} seconds")
         return expanded_df
 
 
@@ -970,7 +870,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--input_dir", help="Directory containing images", required=True)
 parser.add_argument("--output_dir", help="Directory to save the output images", required=True)
 parser.add_argument("-gt","--ground_truth", help="CSV file containing the points and labels", required=True)
-parser.add_argument("--model", help="Model to use for prediction. If superpixel, the ML_Superpixels folder must be at the same path than this script.", default="sam", choices=["sam", "superpixel"])
+parser.add_argument("--model", help="Model to use for prediction. If superpixel, the ML_Superpixels folder must be at the same path than this script.", default="mixed", choices=["sam", "superpixel", "mixed"])
 parser.add_argument("--dataset", help="Dataset to use for superpixel expansion", required=False)
 parser.add_argument("--max_distance", help="Maximum distance between expanded points and the seed", type=int)
 parser.add_argument("--generate_eval_images", help="Generate evaluation images for the expansion (sparse and expanded images for all the classes)", required=False, action='store_true')
@@ -1019,6 +919,10 @@ labels = input_df['Label'].unique()
 if args.generate_eval_images:
     generate_eval_images = True
 
+if args.dataset is None and (args.model == "superpixel" or args.model == "mixed"):
+    print("Dataset not provided for selected model. Exiting...")
+    sys.exit()
+
 if args.color_dict:
     print("color dictionary provided. Loading color_dict...")
     color_dict = pd.read_csv(args.color_dict).to_dict()
@@ -1046,25 +950,116 @@ else:
         color_dict = None
         labels = input_df['Label'].unique().tolist()
 
-if args.model == "sam":
+if args.model == "sam" or args.model == "mixed":
     device = "cuda"
     print("PyTorch version:", torch.__version__)
     print("Torchvision version:", torchvision.__version__)
     print("CUDA is available:", torch.cuda.is_available())
     model = sam_model_registry["vit_h"](checkpoint="vit_h.pth")
     model.to(device)
+
     predictor = SamPredictor(model)
-    # mask_generator = SamAutomaticMaskGenerator(model=model, points_per_side=32)
-    LabelExpander = SAMLabelExpander(color_dict, input_df, labels, image_dir, output_df, output_dir, predictor, remove_far_points, generate_eval_images, generate_csv)
-elif args.model == "superpixel":
+    LabelExpander_sam = SAMLabelExpander(color_dict, input_df, labels, output_df, predictor, generate_eval_images)
+
+if args.model == "superpixel" or args.model == "mixed":
     dataset = args.dataset
-    LabelExpander = SuperpixelLabelExpander(dataset, color_dict, input_df, labels, image_dir, output_df, output_dir, remove_far_points, generate_eval_images=generate_eval_images, generate_csv=generate_csv)
+    LabelExpander_spx = SuperpixelLabelExpander(dataset, color_dict, input_df, labels, output_df)
+
+
+mask_dir = output_dir + 'labels/'
+if not os.path.exists(mask_dir):
+    os.makedirs(mask_dir)
+
+eval_images_dir = output_dir + 'eval_images/'
+if not os.path.exists(eval_images_dir):
+    os.makedirs(eval_images_dir)
+
+processed_images = 0
+
+image_names_csv = input_df['Name'].unique()
+
+if '.' in image_dir.split('/')[-1]:
+    image_dir = image_dir[:image_dir.rfind('/') + 1]
+    image_name = image_dir.split('/')[-1]
+    image_names_csv = [image_name]
 else:
-    print("Invalid model option. Please choose either 'sam' or 'superpixel'.")
-    sys.exit(1)
+    image_dir = image_dir
+    image_names_dir = os.listdir(image_dir)
 
-image_df = LabelExpander.expand_images()
+# checkMissmatchInFiles(image_names_csv, os.listdir(image_dir))
 
-print('Finished expanding images')
+for image_name in image_names_csv:
+    image_path = os.path.join(image_dir, image_name)
+    image = cv2.imread(image_path)
+
+    if image is None:
+        print(f"ERROR: Failed to load image at {image_path}")
+        continue
+
+    print('Expanding labels for', image_name, '...')
+
+    points = input_df[input_df['Name'] == image_name].iloc[:, 1:3].to_numpy().astype(int)
+    labels = input_df[input_df['Name'] == image_name].iloc[:, 3].to_numpy()
+    unique_labels_str_i = np.unique(labels)
+
+    eval_images_dir_i = eval_images_dir + image_name + '/'
+
+    start_expand = time.time()
+    if args.model == "sam":
+        output_df = LabelExpander_sam.expand_image(unique_labels_str_i, image, eval_images_dir_i)
+    elif args.model == "superpixel":
+        output_df = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i)
+    elif args.model == "mixed":
+        print("Expanding labels with SAM...")
+        expanded_sam = LabelExpander_sam.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
+        print("\nExpanding labels with Superpixels...")
+        expanded_spx = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
+
+        # Remove duplicates from expanded_sam and expanded_spx based on Row and Column
+        expanded_sam = expanded_sam.drop_duplicates(subset=["Row", "Column"])
+        expanded_spx = expanded_spx.drop_duplicates(subset=["Row", "Column"])
+
+        merged_df = expanded_spx.merge(expanded_sam, on=["Row", "Column"], how='left', indicator=True)
+        points_not_in_sam = merged_df[merged_df['_merge'] == 'left_only'].drop(columns=['_merge'])
+        output_df = pd.concat([expanded_sam, points_not_in_sam], ignore_index=True).drop_duplicates(subset=["Row", "Column"])
+
+    print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
+    mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+
+    # if self.unique_labels_str are integers, use those values as labels
+    if isinstance(labels[0], str):
+        color_mask = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
+        mask_color_dir = output_dir + 'labels_rgb/'
+        if not os.path.exists(mask_color_dir):
+            os.makedirs(mask_color_dir)
+        for i, label in enumerate(labels, start=1):
+            aux = output_df.iloc[:, 1:3]
+            expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
+            color = color_dict[label]  # Retrieve the RGB color for the current label
+            for point in expanded_i:
+                point = point + BORDER_SIZE
+                mask[point[0], point[1]] = i  # Assign grayscale value to mask
+                value_list = list(color.values())
+                value_array = np.array(value_list)
+                color_mask[point[0], point[1]] = value_array
+        cv2.imwrite(mask_color_dir+image_name, color_mask)
+        unique_labels_int = [i for i in range(1, len(unique_labels_str_i) + 1)]
+    else:
+        unique_labels_int = [int(i) for i in unique_labels_str_i]
+
+    for i, label in enumerate(unique_labels_int, start=1):
+        aux = output_df.iloc[:, 1:3]
+        expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
+        for point in expanded_i:
+            point = point + BORDER_SIZE
+            mask[point[0], point[1]] = label
+    cv2.imwrite(mask_dir + image_name, mask)
+
+    print(f"{processed_images + 1}/{len(image_names_csv)}")
+
+    if generate_csv:
+        LabelExpander.generate_csv()
+
+print('Images expanded!')
 
 
