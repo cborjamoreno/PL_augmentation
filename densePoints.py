@@ -1067,7 +1067,8 @@ for image_name in image_names_csv:
             mask[point[0], point[1]] = label
     cv2.imwrite(mask_dir + image_name, mask)
 
-    print(f"{processed_images + 1}/{len(image_names_csv)}")
+    processed_images += 1
+    print(f"{processed_images}/{len(image_names_csv)}")
 
     if generate_csv:
         LabelExpander.generate_csv()
