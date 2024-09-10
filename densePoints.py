@@ -648,6 +648,9 @@ class SAMLabelExpander(LabelExpander):
         # Initialize the segment counter
         segment_counter = 0
 
+        self.gt_points = np.array([])
+        self.gt_labels = np.array([])
+
         # use SAM to expand the points into masks. Artificial new GT points.
         for i in range(len(unique_labels_str)):
             
@@ -821,7 +824,6 @@ class SuperpixelLabelExpander(LabelExpander):
         if os.path.exists("ML_Superpixels/Datasets/"+self.dataset):
             shutil.rmtree("ML_Superpixels/Datasets/"+self.dataset)
 
-        start_dataset_management = time.time()
         new_filename_path = "ML_Superpixels/Datasets/"+self.dataset + "/sparse_GT/train/"
         if not os.path.exists(new_filename_path):
             os.makedirs(new_filename_path)
@@ -833,7 +835,6 @@ class SuperpixelLabelExpander(LabelExpander):
 
         # Save the image
         cv2.imwrite(new_filename, sparseImage)
-        print(f"Time taken by dataset_management: {time.time() - start_dataset_management} seconds")
 
         generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
 
@@ -1010,9 +1011,15 @@ for image_name in image_names_csv:
         output_df = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i)
     elif args.model == "mixed":
         print("\nExpanding labels with SAM...")
+        start_sam = time.time()
         expanded_sam = LabelExpander_sam.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
+        end_sam = time.time()
+
+        start_spx = time.time()
         print("\nExpanding labels with Superpixels...")
         expanded_spx = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
+        print(f"Time taken by SAM: {end_sam - start_sam} seconds")
+        print(f"Time taken by Superpixels: {time.time() - start_spx} seconds")
 
         # Remove duplicates from expanded_sam and expanded_spx based on Row and Column
         expanded_sam = expanded_sam.drop_duplicates(subset=["Row", "Column"])
@@ -1029,11 +1036,6 @@ for image_name in image_names_csv:
 
         # Concatenate expanded_sam with points_not_in_sam and remove duplicates based on Row and Column
         output_df = pd.concat([expanded_sam, points_not_in_sam], ignore_index=True).drop_duplicates(subset=["Row", "Column"])
-
-        print(f"Number of points in expanded_sam: {len(expanded_sam)}")
-        print(f"Number of points in expanded_spx: {len(expanded_spx)}")
-        print(f"Number of points not in sam: {len(points_not_in_sam)}")
-        print(f"Number of points in output_df: {len(output_df)}")
 
     print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
     mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)

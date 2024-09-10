@@ -99,10 +99,7 @@ def image_superpixels_gt(csv_name, gt_name, n_superpixels, DEFAULT_VALUE):
     return blank_image
 
 def process_file(filename, out_folder, superpixels_folder, csv_sizes, DEFAULT_VALUE):
-    print('filename',filename)
     gt_name = filename.split('/')[-1]
-    print('gt_name',gt_name)
-    print('out_folder',out_folder)
     gt_filename = os.path.join(out_folder, gt_name)
     image_format = gt_name.split('.')[-1]
 
@@ -137,7 +134,6 @@ def generate_augmented_GT(filename, dataset, default_value, number_levels, start
         path_names = path_names[:-1]
     directorio = path_names[-1]
 
-    print('directorio:', directorio)
     sparse_dir = os.path.join('ML_Superpixels/Datasets',directorio, 'sparse_GT')
     out_dir = os.path.join('ML_Superpixels/Datasets',directorio, 'augmented_GT')
     superpixels_dir = os.path.join('ML_Superpixels/Datasets',directorio, 'superpixels')
@@ -149,12 +145,8 @@ def generate_augmented_GT(filename, dataset, default_value, number_levels, start
     for size in csv_sizes:
         size_sup_string = size_sup_string + str(size) + " "
     
-    # print('csv_sizes:', csv_sizes)
-
-    start = time.time()
     # Generate superpixels
     os.system("sh ML_Superpixels/generate_superpixels/generate_superpixels.sh " + dataset + size_sup_string)
-    # print("Superpixels generation time: " + str(time.time() - start))
 
     start_processing = time.time()
     in_folder = os.path.join(sparse_dir, folder)
@@ -166,4 +158,3 @@ def generate_augmented_GT(filename, dataset, default_value, number_levels, start
 
     filename = os.path.join(in_folder, filename)
     process_file(filename, out_folder, superpixels_folder, csv_sizes, DEFAULT_VALUE)
-    print("Processing time: " + str(time.time() - start_processing))
