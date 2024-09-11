@@ -1010,16 +1010,16 @@ for image_name in image_names_csv:
     elif args.model == "superpixel":
         output_df = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i)
     elif args.model == "mixed":
-        print("\nExpanding labels with SAM...")
+        print("\tExpanding labels with SAM...")
         start_sam = time.time()
         expanded_sam = LabelExpander_sam.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
         end_sam = time.time()
 
         start_spx = time.time()
-        print("\nExpanding labels with Superpixels...")
+        print("\tExpanding labels with Superpixels...")
         expanded_spx = LabelExpander_spx.expand_image(unique_labels_str_i, image, eval_images_dir_i).drop_duplicates()
-        print(f"Time taken by SAM: {end_sam - start_sam} seconds")
-        print(f"Time taken by Superpixels: {time.time() - start_spx} seconds")
+        print(f"\tTime taken by SAM: {end_sam - start_sam} seconds")
+        print(f"\tTime taken by Superpixels: {time.time() - start_spx} seconds")
 
         # Remove duplicates from expanded_sam and expanded_spx based on Row and Column
         expanded_sam = expanded_sam.drop_duplicates(subset=["Row", "Column"])
@@ -1038,39 +1038,37 @@ for image_name in image_names_csv:
         output_df = pd.concat([expanded_sam, points_not_in_sam], ignore_index=True).drop_duplicates(subset=["Row", "Column"])
 
     print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
+    processed_images += 1
+    print(f"{processed_images}/{len(image_names_csv)}\n")
+
+    # Initialize masks
     mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
 
-    # if self.unique_labels_str are integers, use those values as labels
+    # Check if labels are strings
     if isinstance(labels[0], str):
         color_mask = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
-        mask_color_dir = output_dir + 'labels_rgb/'
-        if not os.path.exists(mask_color_dir):
-            os.makedirs(mask_color_dir)
+        mask_color_dir = os.path.join(output_dir, 'labels_rgb')
+        os.makedirs(mask_color_dir, exist_ok=True)
+
         for i, label in enumerate(labels, start=1):
-            aux = output_df.iloc[:, 1:3]
-            expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
-            color = color_dict[label]  # Retrieve the RGB color for the current label
-            for point in expanded_i:
-                point = point + BORDER_SIZE
-                mask[point[0], point[1]] = i  # Assign grayscale value to mask
-                value_list = list(color.values())
-                value_array = np.array(value_list)
-                color_mask[point[0], point[1]] = value_array
-        cv2.imwrite(mask_color_dir+image_name, color_mask)
-        unique_labels_int = [i for i in range(1, len(unique_labels_str_i) + 1)]
+            expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+            color = np.array(list(color_dict[label].values()))
+            mask[expanded_i[:, 0], expanded_i[:, 1]] = i
+            color_mask[expanded_i[:, 0], expanded_i[:, 1]] = color
+
+        # Save color mask as PNG
+        cv2.imwrite(os.path.join(mask_color_dir, os.path.splitext(image_name)[0] + '.png'), color_mask)
+        unique_labels_int = list(range(1, len(labels) + 1))
     else:
-        unique_labels_int = [int(i) for i in unique_labels_str_i]
+        unique_labels_int = [int(i) for i in labels]
 
-    for i, label in enumerate(unique_labels_int, start=1):
-        aux = output_df.iloc[:, 1:3]
-        expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int)
-        for point in expanded_i:
-            point = point + BORDER_SIZE
-            mask[point[0], point[1]] = label
-    cv2.imwrite(mask_dir + image_name, mask)
+    for label in unique_labels_int:
+        expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+        mask[expanded_i[:, 0], expanded_i[:, 1]] = label
 
-    processed_images += 1
-    print(f"{processed_images}/{len(image_names_csv)}")
+    # Save grayscale mask as PNG
+    cv2.imwrite(os.path.join(mask_dir, os.path.splitext(image_name)[0] + '.png'), mask)
+
 
     if generate_csv:
         LabelExpander.generate_csv()

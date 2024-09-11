@@ -3,6 +3,20 @@ import cv2
 import argparse
 import os
 import numpy as np
+from tqdm import tqdm
+
+# Define a mapping from RGB values to class labels
+class_mapping = {
+    (64, 0, 64): 0,  # Background
+    (0, 0, 0): 1,
+    (0, 0, 255): 2,
+    (0, 255, 0): 3,
+    (0, 255, 255): 4,
+    (255, 0, 0): 5,
+    (255, 0, 255): 6,
+    (255, 255, 0): 7,
+    (255, 255, 255): 8
+}
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-p", "--images_pth", help="path of expanded images", required=True)
@@ -29,76 +43,98 @@ def calculate_metrics(img, gt):
     img_valid = img[valid_pixels_mask]
     gt_valid = gt[valid_pixels_mask]
 
-    # Calculate PA and MPA excluding background pixels
-    total_valid_pixels = img_valid.reshape(-1, img_valid.shape[-1]).shape[0]
-    pixel_accuracy = np.sum(np.all(gt_valid == img_valid, axis=-1)) / total_valid_pixels if total_valid_pixels > 0 else 0
+    # Map RGB values to class labels
+    gt_labels = np.zeros(gt_valid.shape[:2], dtype=np.uint8)
+    img_labels = np.zeros(img_valid.shape[:2], dtype=np.uint8)
+    for rgb, label in class_mapping.items():
+        gt_labels[np.all(gt_valid == rgb, axis=-1)] = label
+        img_labels[np.all(img_valid == rgb, axis=-1)] = label
 
-    unique_classes = np.unique(gt_valid.reshape(-1, gt_valid.shape[-1]), axis=0)
+    # Calculate per-class IoU and PA
+    unique_classes = np.unique(gt_labels)
+    if 0 in unique_classes:  # Skip background class (label 0)
+        unique_classes = unique_classes[unique_classes != 0]
+
+    class_iou = {}
     class_pa = []
 
     for cls in unique_classes:
-        gt_cls = np.all(gt_valid == cls, axis=-1)
-        img_cls = np.all(img_valid == cls, axis=-1)
+        gt_cls = gt_labels == cls
+        img_cls = img_labels == cls
 
         pa_cls = np.sum(gt_cls & img_cls) / np.sum(gt_cls) if np.sum(gt_cls) != 0 else 0
         class_pa.append(pa_cls)
-
-    mean_pa = np.mean(class_pa) if class_pa else 0
-
-    # MIoU calculation already excludes background, so no changes needed here
-    class_iou = []
-
-    for cls in unique_classes:
-        gt_cls = np.all(gt_valid == cls, axis=-1)
-        img_cls = np.all(img_valid == cls, axis=-1)
 
         intersection = np.sum(gt_cls & img_cls)
         union = np.sum(gt_cls | img_cls)
 
         iou = intersection / union if union != 0 else 0
-        class_iou.append(iou)
+        class_iou[cls] = iou
 
-    mean_iou = np.mean(class_iou) if class_iou else 0
+    mean_pa = np.mean(class_pa) if class_pa else 0
+    return mean_pa, class_iou, class_pa
 
-    return pixel_accuracy, mean_pa, mean_iou
-
-total_pa = 0
-total_mpa = 0
-total_miou = 0
-total_images = 0
-
-for filename in glob.glob(image_pth + '/*.*'):
+def process_image(filename):
     img = cv2.imread(filename)
-
     base_name = os.path.splitext(os.path.basename(filename))[0]
-    gt_base_name = base_name.replace("_labels_rgb", "") + ".bmp"
-    # gt_base_name = base_name + ".bmp"
-
-    # print(f"Evaluating image {base_name}")
-    # print(f"Ground truth filename: {gt_base_name}")
-    # print(f'Image name: {filename}')
-
+    gt_base_name = base_name + ".bmp"
     gt_filename = os.path.join(gt_pth, gt_base_name)
     gt = cv2.imread(gt_filename)
 
     if gt is None:
         print(f"Ground truth not found for image {filename}")
-        continue
+        return None
 
     if img.shape != gt.shape:
         print(img.shape, gt.shape)
-        continue
-    pa, mpa, miou = calculate_metrics(img, gt)
+        return None
 
-    total_pa += pa
-    total_mpa += mpa
-    total_miou += miou
-    total_images += 1
+    metrics = calculate_metrics(img, gt)
+    del img
+    del gt
+    return metrics
+
+image_files = glob.glob(image_pth + '/*.*')
+
+total_pa = 0
+total_images = 0
+class_iou_aggregate = {label: [] for label in class_mapping.values() if label != 0}
+class_pa_aggregate = {label: [] for label in class_mapping.values() if label != 0}
+
+with tqdm(total=len(image_files), desc="Evaluating images") as pbar:
+    for filename in image_files:
+        result = process_image(filename)
+        if result is not None:
+            pa, class_iou, class_pa = result
+            total_pa += pa
+            total_images += 1
+
+            for cls, iou in class_iou.items():
+                class_iou_aggregate[cls].append(iou)
+
+            for cls, pa_cls in zip(class_iou.keys(), class_pa):
+                class_pa_aggregate[cls].append(pa_cls)
+
+        pbar.update(1)
 
 mean_pa = total_pa / total_images if total_images > 0 else 0
-mean_mpa = total_mpa / total_images if total_images > 0 else 0
-mean_miou = total_miou / total_images if total_images > 0 else 0
+
+# Calculate mean IoU per class
+mean_class_iou = {cls: np.mean(iou_list) for cls, iou_list in class_iou_aggregate.items() if iou_list}
+
+# Calculate overall mean IoU
+mean_miou = np.mean(list(mean_class_iou.values())) if mean_class_iou else 0
+
+# Calculate mean PA per class
+mean_class_pa = {cls: np.mean(pa_list) for cls, pa_list in class_pa_aggregate.items() if pa_list}
+
+# Calculate overall mean PA (MPA)
+mean_mpa = np.mean(list(mean_class_pa.values())) if mean_class_pa else 0
 
 print(f"Mean Pixel Accuracy (PA): {mean_pa}")
-print(f"Mean Pixel Accuracy (MPA): {mean_mpa}")
 print(f"Mean Intersection over Union (MIoU): {mean_miou}")
+print(f"Mean Pixel Accuracy per class (MPA): {mean_mpa}")
+
+# Print mean IoU and PA for each class
+for cls, miou in mean_class_iou.items():
+    print(f"Mean IoU for class {cls}: {miou}")
