@@ -132,9 +132,9 @@ mean_class_pa = {cls: np.mean(pa_list) for cls, pa_list in class_pa_aggregate.it
 mean_mpa = np.mean(list(mean_class_pa.values())) if mean_class_pa else 0
 
 print(f"Mean Pixel Accuracy (PA): {mean_pa}")
-print(f"Mean Intersection over Union (MIoU): {mean_miou}")
 print(f"Mean Pixel Accuracy per class (MPA): {mean_mpa}")
+print(f"Mean Intersection over Union (MIoU): {mean_miou}")
 
 # Print mean IoU and PA for each class
 for cls, miou in mean_class_iou.items():
-    print(f"Mean IoU for class {cls}: {miou}")
+    print(f"{miou:.3f}")

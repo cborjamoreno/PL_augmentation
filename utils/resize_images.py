@@ -12,7 +12,7 @@ def resize_images(input_folder, output_folder, target_size):
             img_path = os.path.join(input_folder, filename)
             with Image.open(img_path) as img:
                 # Resize the image
-                img_resized = img.resize(target_size, Image.ANTIALIAS)
+                img_resized = img.resize(target_size, Image.LANCZOS)
                 
                 # Save the resized image to the output folder
                 output_path = os.path.join(output_folder, filename)
@@ -20,8 +20,8 @@ def resize_images(input_folder, output_folder, target_size):
                 print(f'Resized and saved {filename} to {output_folder}')
 
 # Example usage
-input_folder = '../Datasets/'
-output_folder = 'path/to/output/folder'
-target_size = (800, 600)  # Width, Height
+input_folder = '../Datasets/SUIM/test/images'
+output_folder = '../Datasets/SUIM/test/images'
+target_size = (640, 480)  # Width, Height
 
 resize_images(input_folder, output_folder, target_size)

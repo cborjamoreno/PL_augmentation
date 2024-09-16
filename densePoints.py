@@ -583,47 +583,47 @@ class LabelExpander(ABC):
             print(f"Time taken by generate_image: {time.time() - start_generate_image} seconds")
 
         if self.generate_csv:
-            
-            start_generate_csv = time.time()
-            # TODO: Perform Kmeans clustering separately for each class
-            if not image_df.empty:
-                num_clusters = len(unique_labels_str_i)
-                kmeans = KMeans(n_clusters=num_clusters)
-                image_df['Cluster'] = kmeans.fit_predict(image_df[['Row', 'Column']])
+            pass
+            # start_generate_csv = time.time()
+            # # TODO: Perform Kmeans clustering separately for each class
+            # if not image_df.empty:
+            #     num_clusters = len(unique_labels_str_i)
+            #     kmeans = KMeans(n_clusters=num_clusters)
+            #     image_df['Cluster'] = kmeans.fit_predict(image_df[['Row', 'Column']])
 
-                # Count the number of points in each cluster
-                cluster_counts = image_df['Cluster'].value_counts()
+            #     # Count the number of points in each cluster
+            #     cluster_counts = image_df['Cluster'].value_counts()
 
-                # Calculate the sampling rate for each class (inverse of class count)
-                sampling_rates = 1 / cluster_counts
+            #     # Calculate the sampling rate for each class (inverse of class count)
+            #     sampling_rates = 1 / cluster_counts
 
-                # Normalize the sampling rates so that they sum up to 1
-                sampling_rates = sampling_rates / sampling_rates.sum()
+            #     # Normalize the sampling rates so that they sum up to 1
+            #     sampling_rates = sampling_rates / sampling_rates.sum()
 
-                # Calculate the number of points to sample from each class
-                points_per_cluster = (sampling_rates * 950).round().astype(int)
+            #     # Calculate the number of points to sample from each class
+            #     points_per_cluster = (sampling_rates * 950).round().astype(int)
 
-                # Create an empty DataFrame to store the sampled points
-                sampled_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
+            #     # Create an empty DataFrame to store the sampled points
+            #     sampled_df = pd.DataFrame(columns=['Name', 'Row', 'Column', 'Label'])
 
-                # Sample points from each cluster
-                for cluster in image_df['Cluster'].unique():
-                    cluster_points = image_df[image_df['Cluster'] == cluster]
-                    num_points = points_per_cluster[cluster]
-                    sampled_points = cluster_points.sample(min(len(cluster_points), num_points))
-                    sampled_df = pd.concat([sampled_df, sampled_points])
+            #     # Sample points from each cluster
+            #     for cluster in image_df['Cluster'].unique():
+            #         cluster_points = image_df[image_df['Cluster'] == cluster]
+            #         num_points = points_per_cluster[cluster]
+            #         sampled_points = cluster_points.sample(min(len(cluster_points), num_points))
+            #         sampled_df = pd.concat([sampled_df, sampled_points])
 
-                # If there are still points left to sample, sample randomly from the entire DataFrame
-                if len(sampled_df) < 950:
-                    remaining_points = 950 - len(sampled_df)
-                    additional_points = image_df.sample(remaining_points)
-                    sampled_df = pd.concat([sampled_df, additional_points])
+            #     # If there are still points left to sample, sample randomly from the entire DataFrame
+            #     if len(sampled_df) < 950:
+            #         remaining_points = 950 - len(sampled_df)
+            #         additional_points = image_df.sample(remaining_points)
+            #         sampled_df = pd.concat([sampled_df, additional_points])
                     
-                sparse_df = pd.concat([sparse_df, sampled_df])
-            else:
-                print("Warning: image_df is empty. Skipping KMeans clustering and sampling.")
+            #     sparse_df = pd.concat([sparse_df, sampled_df])
+            # else:
+            #     print("Warning: image_df is empty. Skipping KMeans clustering and sampling.")
             
-            print(f"Time taken by generate_image: {time.time() - start_generate_csv} seconds")
+            # print(f"Time taken by generate_image: {time.time() - start_generate_csv} seconds")
 
         return expanded_df
         
