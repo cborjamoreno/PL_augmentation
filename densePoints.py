@@ -876,6 +876,7 @@ parser.add_argument("--generate_eval_images", help="Generate evaluation images f
 parser.add_argument("--color_dict", help="CSV file containing the color dictionary", required=False)
 parser.add_argument("--generate_csv", help="Generate a sparse csv file", required=False, action='store_true')
 parser.add_argument("--frame", help="Frame size to crop the images", required=False, type=int, default=0)
+parser.add_argument("--gt_images", help="Directory containing the ground truth images. Just for visual comparison", required=False)
 args = parser.parse_args()
 
 remove_far_points = False
@@ -902,6 +903,11 @@ if not os.path.exists(image_path):
 if args.frame:
     BORDER_SIZE = args.frame
 
+if args.gt_images:
+    gt_images_path = args.gt_images
+    if not os.path.exists(gt_images_path):
+        parser.error(f"The directory {gt_images_path} does not exist")
+
 # Get all the images names in the input directory
 # image_names = os.listdir(image_dir)
 # image_names = [image_name[:-4] for image_name in image_names if image_name[-4:] == '.jpg']
@@ -915,7 +921,8 @@ if output_dir[-1] != '/':
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
-labels = input_df['Label'].unique()
+unique_labels = input_df['Label'].unique()
+
 if args.generate_eval_images:
     generate_eval_images = True
 
@@ -927,23 +934,23 @@ if args.color_dict:
     print("color dictionary provided. Loading color_dict...")
     color_dict = pd.read_csv(args.color_dict).to_dict()
     # Get the labels that are in self.color_dict.keys() but not in labels
-    extra_labels = set(color_dict.keys()) - set(labels)
+    extra_labels = set(color_dict.keys()) - set(unique_labels)
 
     # Remove the extra labels from color_dict
     for label in extra_labels:
         del color_dict[label]
 
-    if set(labels) != set(color_dict.keys()):
+    if set(unique_labels) != set(color_dict.keys()):
         print('Labels in the .csv file and color_dict do not match:')
-        print('     Labels in unique_labels_str but not in color_dict:', set(labels) - set(color_dict.keys()))
-        print('     Labels in color_dict but not in unique_labels_str:', set(color_dict.keys()) - set(labels))
+        print('     Labels in unique_labels_str but not in color_dict:', set(unique_labels) - set(color_dict.keys()))
+        print('     Labels in color_dict but not in unique_labels_str:', set(color_dict.keys()) - set(unique_labels))
 
         print('Creating a new color_dict randomly...')
-        color_dict = create_color_dict(labels, output_dir)
+        color_dict = create_color_dict(unique_labels, output_dir)
 else:
     if generate_eval_images:
         print("--color_dict not provided. Colors will be generated randomly.")
-        color_dict = create_color_dict(labels, output_dir)
+        color_dict = create_color_dict(unique_labels, output_dir)
         # Order unique_labels_str in the way that they appear in color_dict
         labels = [label for label in color_dict.keys() if label in labels]
     else:
@@ -988,9 +995,86 @@ else:
 
 # checkMissmatchInFiles(image_names_csv, os.listdir(image_dir))
 
+def get_color_hsv(index, total_colors):
+    hue = (index / total_colors) * 360  # Vary hue from 0 to 360 degrees
+    saturation = 1.0 if index % 2 == 0 else 0.7  # Alternate saturation levels
+    value = 1.0 if index % 3 == 0 else 0.8  # Alternate value levels
+    return hue, saturation, value
+
+def hsv_to_rgb(h, s, v):
+    h = float(h)
+    s = float(s)
+    v = float(v)
+    hi = int(h / 60.0) % 6
+    f = (h / 60.0) - hi
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    r, g, b = 0, 0, 0
+    if hi == 0:
+        r, g, b = v, t, p
+    elif hi == 1:
+        r, g, b = q, v, p
+    elif hi == 2:
+        r, g, b = p, v, t
+    elif hi == 3:
+        r, g, b = p, q, v
+    elif hi == 4:
+        r, g, b = t, p, v
+    elif hi == 5:
+        r, g, b = v, p, q
+    return int(r * 255), int(g * 255), int(b * 255)
+
+if not isinstance(unique_labels[0], str):
+    total_colors = len(unique_labels)
+    colors_hsv = [get_color_hsv(i, total_colors) for i in range(total_colors)]
+    colors_rgb = [hsv_to_rgb(*color) for color in colors_hsv]
+
+    # Sort colors by HSV values to get similar colors together
+    sorted_colors_hsv = sorted(colors_hsv, key=lambda x: (x[0], x[1], x[2]))
+    sorted_colors_rgb = [hsv_to_rgb(*color) for color in sorted_colors_hsv]
+
+    # Sort the labels
+    sorted_labels = sorted(unique_labels)
+
+    # Create a dictionary to store the color for each unique label
+    label_colors = {label: sorted_colors_rgb[i % total_colors] for i, label in enumerate(sorted_labels)}
+
+    # Include the class 0 and assign it a specific color (e.g., black)
+    label_colors[0] = (0, 0, 0)
+
+    # print("Label colors:")
+    # for label in sorted(label_colors.keys()):
+    #     color = label_colors[label]
+    #     print(f"{color}")
+
+    # # Visualize the colors in a grid
+    # grid_size = int(np.ceil(np.sqrt(total_colors)))
+    # fig, ax = plt.subplots(grid_size, grid_size, figsize=(10, 10))
+
+    # for i, label in enumerate(sorted(label_colors.keys())):
+    #     row = i // grid_size
+    #     col = i % grid_size
+    #     color = label_colors[label]
+    #     ax[row, col].imshow([[color]], aspect='auto')
+    #     ax[row, col].axis('off')
+    #     ax[row, col].set_title(f"Label {label}", fontsize=8)
+
+    # # Hide any unused subplots
+    # for j in range(i + 1, grid_size * grid_size):
+    #     row = j // grid_size
+    #     col = j % grid_size
+    #     ax[row, col].axis('off')
+
+    # plt.tight_layout()
+    # plt.show()
+
 for image_name in image_names_csv:
     image_path = os.path.join(image_dir, image_name)
     image = cv2.imread(image_path)
+
+    if args.gt_images:
+        gt_image = cv2.imread(os.path.join(gt_images_path, image_name))
 
     if image is None:
         print(f"ERROR: Failed to load image at {image_path}")
@@ -1037,6 +1121,80 @@ for image_name in image_names_csv:
         # Concatenate expanded_sam with points_not_in_sam and remove duplicates based on Row and Column
         output_df = pd.concat([expanded_sam, points_not_in_sam], ignore_index=True).drop_duplicates(subset=["Row", "Column"])
 
+        rgb_flag = isinstance(labels[0], str)
+
+        if rgb_flag:
+            color_mask_sam = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
+            color_mask_spx = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
+            color_mask_mix = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
+        
+        else:
+            color_mask_sam = np.full((image.shape[0], image.shape[1], 3), fill_value=(0, 0, 0), dtype=np.uint8)
+            color_mask_spx = np.full((image.shape[0], image.shape[1], 3), fill_value=(0, 0, 0), dtype=np.uint8)
+            color_mask_mix = np.full((image.shape[0], image.shape[1], 3), fill_value=(0, 0, 0), dtype=np.uint8)
+            labels = [int(i) for i in labels]
+
+        mask_color_dir = os.path.join(output_dir, 'labels_mosaic')
+        os.makedirs(mask_color_dir, exist_ok=True)
+
+        for i, label in enumerate(labels, start=1):
+            expanded_i_sam = expanded_sam[expanded_sam['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+            expanded_i_spx = expanded_spx[expanded_spx['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+            expanded_i_mix = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+
+            if rgb_flag:
+                color = np.array(list(color_dict[label].values()))
+            else:
+                #grayscale value
+                color = label_colors[label]
+
+            color_mask_sam[expanded_i_sam[:, 0], expanded_i_sam[:, 1]] = color
+            color_mask_spx[expanded_i_spx[:, 0], expanded_i_spx[:, 1]] = color
+            color_mask_mix[expanded_i_mix[:, 0], expanded_i_mix[:, 1]] = color
+        
+        if args.gt_images:
+            if not rgb_flag:
+                gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2GRAY)
+        
+                # Create an empty RGB image
+                gt_image_rgb = np.zeros((gt_image.shape[0], gt_image.shape[1], 3), dtype=np.uint8)
+                
+                # Assign each pixel of gt_image to the corresponding color in label_colors
+                for label in np.unique(gt_image):
+                    color = label_colors.get(label, (0, 0, 0))  # Default to black if label not found
+                    # print(f"Label {label} -> Color {color}")
+                    gt_image_rgb[gt_image == label] = color
+                
+                gt_image = gt_image_rgb  # Replace the grayscale image with the RGB image
+            fig, axs = plt.subplots(1, 4, figsize=(20, 5))
+            im = axs[0].imshow(gt_image)
+            axs[0].set_title("Ground Truth")
+            axs[0].axis('off')
+            axs[1].imshow(color_mask_sam)
+            axs[1].set_title("SAM")
+            axs[1].axis('off')
+            axs[2].imshow(color_mask_spx)
+            axs[2].set_title("Superpixels")
+            axs[2].axis('off')
+            axs[3].imshow(color_mask_mix)
+            axs[3].set_title("Mixed")
+            axs[3].axis('off')
+        else:
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+            im = axs[0].imshow(color_mask_sam)
+            axs[0].set_title("SAM")
+            axs[0].axis('off')
+            axs[1].imshow(color_mask_spx)
+            axs[1].set_title("Superpixels")
+            axs[1].axis('off')
+            axs[2].imshow(color_mask_mix)
+            axs[2].set_title("Mixed")
+            axs[2].axis('off')
+
+        plt.subplots_adjust(wspace=0.05, hspace=0.05)
+
+        plt.savefig(os.path.join(mask_color_dir, os.path.splitext(image_name)[0] + '.png'), bbox_inches='tight', pad_inches=0.1)
+
     print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
     processed_images += 1
     print(f"{processed_images}/{len(image_names_csv)}\n")
@@ -1068,7 +1226,6 @@ for image_name in image_names_csv:
 
     # Save grayscale mask as PNG
     cv2.imwrite(os.path.join(mask_dir, os.path.splitext(image_name)[0] + '.png'), mask)
-
 
     if generate_csv:
         LabelExpander.generate_csv()

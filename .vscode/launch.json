@@ -11,10 +11,11 @@
             "program": "${workspaceFolder}/densePoints.py",
             "console": "integratedTerminal",
             "args": [
-                "--input_dir", "corales/images/test/",
-                "--output_dir", "mosaic/test/",
-                "--ground-truth", "mosaic_test_annotations.csv",
-                "--model", "sam", "--generate_eval_images"
+                "--input_dir", "../Datasets/MosaicsUCSD/train/images/",
+                "--output_dir", "MosaicsUCSD/MosaicsUCSD_mixed_100_2/",
+                "-gt", "../Datasets/MosaicsUCSD/MosaicsUCSD_annotations_100.csv",
+                "--dataset", "MosaicsUCSD",
+                "--gt_images", "../Datasets/MosaicsUCSD/train/labels"
             ]
         }
     ]
