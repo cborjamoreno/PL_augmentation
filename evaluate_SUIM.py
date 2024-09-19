@@ -137,4 +137,4 @@ print(f"Mean Intersection over Union (MIoU): {mean_miou}")
 
 # Print mean IoU and PA for each class
 for cls, miou in mean_class_iou.items():
-    print(f"{miou:.3f}")
+    print(f"{cls}: {miou:.3f}")

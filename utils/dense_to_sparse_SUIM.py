@@ -49,6 +49,7 @@ def process_images(image_pth, output_file, color_dict):
 
     for filename in glob.glob(image_pth + '/*.*'):
         img = cv2.imread(filename)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         points = generate_grid_points(img)
 
         for pos_i, pos_j in points:

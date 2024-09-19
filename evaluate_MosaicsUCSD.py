@@ -116,6 +116,9 @@ print(f"Mean Pixel Accuracy (PA): {mean_pa}")
 print(f"Mean Pixel Accuracy per class (MPA): {mean_mpa}")
 print(f"Mean Intersection over Union (MIoU): {mean_miou}")
 
-# Print mean IoU and PA for each class
-for cls, miou in mean_class_iou.items():
+# Sort the items by cls
+sorted_mean_class_iou = sorted(mean_class_iou.items())
+
+# Print the sorted items
+for cls, miou in sorted_mean_class_iou:
     print(f"{miou:.3f}")

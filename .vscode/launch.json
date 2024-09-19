@@ -11,11 +11,12 @@
             "program": "${workspaceFolder}/densePoints.py",
             "console": "integratedTerminal",
             "args": [
-                "--input_dir", "../Datasets/MosaicsUCSD/train/images/",
-                "--output_dir", "MosaicsUCSD/MosaicsUCSD_mixed_100_2/",
-                "-gt", "../Datasets/MosaicsUCSD/MosaicsUCSD_annotations_100.csv",
-                "--dataset", "MosaicsUCSD",
-                "--gt_images", "../Datasets/MosaicsUCSD/train/labels"
+                "--input_dir", "../Datasets/SUIM/train/images/",
+                "--output_dir", "SUIM/SUIM_mixed_100_test/",
+                "-gt", "SUIM_annotations_100.csv",
+                "--dataset", "SUIM",
+                "--gt_images", "../Datasets/SUIM/train/labels/",
+                "--color_dict", "SUIM_color_dict.csv"
             ]
         }
     ]

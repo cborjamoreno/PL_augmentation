@@ -966,11 +966,11 @@ if args.model == "sam" or args.model == "mixed":
     model.to(device)
 
     predictor = SamPredictor(model)
-    LabelExpander_sam = SAMLabelExpander(color_dict, input_df, labels, output_df, predictor, generate_eval_images)
+    LabelExpander_sam = SAMLabelExpander(color_dict, input_df, unique_labels, output_df, predictor, generate_eval_images)
 
 if args.model == "superpixel" or args.model == "mixed":
     dataset = args.dataset
-    LabelExpander_spx = SuperpixelLabelExpander(dataset, color_dict, input_df, labels, output_df)
+    LabelExpander_spx = SuperpixelLabelExpander(dataset, color_dict, input_df, unique_labels, output_df)
 
 
 mask_dir = output_dir + 'labels/'
@@ -1072,9 +1072,24 @@ if not isinstance(unique_labels[0], str):
 for image_name in image_names_csv:
     image_path = os.path.join(image_dir, image_name)
     image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     if args.gt_images:
-        gt_image = cv2.imread(os.path.join(gt_images_path, image_name))
+        # Get the base name of the image without extension
+        base_image_name = os.path.splitext(image_name)[0]
+        
+        # List all files in the gt_images_path directory
+        gt_files = os.listdir(gt_images_path)
+        
+        # Find the file that matches the base_image_name
+        gt_image_file = next((f for f in gt_files if os.path.splitext(f)[0] == base_image_name), None)
+        
+        if gt_image_file:
+            gt_image_path = os.path.join(gt_images_path, gt_image_file)
+            gt_image = cv2.imread(gt_image_path)
+            gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2RGB)
+        else:
+            print(f"ERROR: Ground truth image for {image_name} not found in {gt_images_path}")
 
     if image is None:
         print(f"ERROR: Failed to load image at {image_path}")
@@ -1180,20 +1195,24 @@ for image_name in image_names_csv:
             axs[3].set_title("Mixed")
             axs[3].axis('off')
         else:
-            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-            im = axs[0].imshow(color_mask_sam)
-            axs[0].set_title("SAM")
+            fig, axs = plt.subplots(1, 4, figsize=(20, 5))
+            im = axs[0].imshow(image)
+            axs[0].set_title("Original image")
             axs[0].axis('off')
-            axs[1].imshow(color_mask_spx)
-            axs[1].set_title("Superpixels")
+            axs[1].imshow(color_mask_sam)
+            axs[1].set_title("SAM")
             axs[1].axis('off')
-            axs[2].imshow(color_mask_mix)
-            axs[2].set_title("Mixed")
+            axs[2].imshow(color_mask_spx)
+            axs[2].set_title("Superpixels")
             axs[2].axis('off')
+            axs[3].imshow(color_mask_mix)
+            axs[3].set_title("Mixed")
+            axs[3].axis('off')
 
         plt.subplots_adjust(wspace=0.05, hspace=0.05)
 
         plt.savefig(os.path.join(mask_color_dir, os.path.splitext(image_name)[0] + '.png'), bbox_inches='tight', pad_inches=0.1)
+        plt.close()
 
     print(f"Time taken by expand_labels: {time.time() - start_expand} seconds")
     processed_images += 1
@@ -1215,6 +1234,7 @@ for image_name in image_names_csv:
             color_mask[expanded_i[:, 0], expanded_i[:, 1]] = color
 
         # Save color mask as PNG
+        color_mask = cv2.cvtColor(color_mask, cv2.COLOR_RGB2BGR)
         cv2.imwrite(os.path.join(mask_color_dir, os.path.splitext(image_name)[0] + '.png'), color_mask)
         unique_labels_int = list(range(1, len(labels) + 1))
     else:
@@ -1231,5 +1251,3 @@ for image_name in image_names_csv:
         LabelExpander.generate_csv()
 
 print('Images expanded!')
-
-
