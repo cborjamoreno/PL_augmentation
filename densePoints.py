@@ -95,59 +95,41 @@ def evaluate_density(kde, points):
     densities = np.exp(kde.score_samples(points))
     return densities
 
-def adjust_priorities_with_density(image_df, densities, density_factor=0.5):
+def adjust_priorities_with_density(image_df, densities, density_factor=0.5, size_factor=0.5):
+    # Calculate initial priorities based on label frequency
     priorities = image_df['Label'].value_counts() / len(image_df)
     priorities = 1 - priorities
 
     label_densities = []
+    label_sizes = []
     for label in priorities.index:
         label_indices = image_df[image_df['Label'] == label].index
         label_density = densities[label_indices].mean()
         label_densities.append(label_density)
+        
+        # Calculate the size of the segment
+        label_size = len(label_indices)
+        label_sizes.append(label_size)
     
     # Normalize densities so the maximum density is 1
     max_density = max(label_densities)
     label_densities = [density / max_density for density in label_densities]
-    # print(f"Densities: {label_densities}")
-
-    # Adjust priorities with density
+    
+    # Normalize sizes so the maximum size is 1
+    max_size = max(label_sizes)
+    label_sizes = [size / max_size for size in label_sizes]
+    
+    # Adjust priorities with density and size
     label_priorities = {}
-    for label, priority, density in zip(priorities.index, priorities, label_densities):
-        label_priorities[label] = priority * (1 - density_factor) + density_factor * density
+    for label, priority, density, size in zip(priorities.index, priorities, label_densities, label_sizes):
+        adjusted_priority = priority * (1 - density_factor - size_factor) + density_factor * density + size_factor * (1 - size)
+        print(density)
+        print(priority)
+        print(adjusted_priority)
+        exit()
+        label_priorities[label] = adjusted_priority
     
-    # print(f"Priorities: {label_priorities}")
-
     return label_priorities
-
-def calculate_iou_polygon(segment_data, other_segment_data):
-    # Convert DataFrame rows to lists of (x, y) tuples
-    polygon1_points = segment_data[['Column', 'Row']].values.tolist()
-    polygon2_points = other_segment_data[['Column', 'Row']].values.tolist()
-    
-    # Create polygons
-    polygon1 = Polygon(polygon1_points)
-    polygon2 = Polygon(polygon2_points)
-
-    # Validate and correct polygons if necessary
-    if not polygon1.is_valid:
-        polygon1 = make_valid(polygon1)
-    if not polygon2.is_valid:
-        polygon2 = make_valid(polygon2)
-
-    # Calculate intersection and union areas
-    try:
-        intersection_area = polygon1.intersection(polygon2).area
-        union_area = polygon1.area + polygon2.area - intersection_area
-        
-        # Avoid division by zero
-        if union_area == 0:
-            return 0
-        
-        # Calculate and return IoU
-        return intersection_area / union_area
-    except Exception as e:
-        print(f"Error calculating IoU: {e}")
-        return 0
     
 def calculate_iou_boxes(segment_data, other_segment_data):
     # Calculate bounding boxes
@@ -177,6 +159,18 @@ def calculate_iou_boxes(segment_data, other_segment_data):
 
     # Calculate and return IoU
     return intersection_area / union_area, intersection_box
+
+def calculate_segment_priorities(image_df, densities, density_factor=1.0):
+    segment_densities = image_df.groupby('Segment').apply(lambda x: densities[x.index].mean())
+
+    # Normalize densities
+    max_density = segment_densities.max()
+    normalized_densities = segment_densities / max_density
+
+    # Calculate priorities based on density alone
+    segment_priorities = normalized_densities * density_factor
+    print(segment_priorities)
+    return segment_priorities
 
 def is_point_in_segment(point, segment_data):
     """Check if the point exists in segment_data."""
@@ -213,7 +207,7 @@ def merge_labels(image_df, gt_points, gt_labels):
                     gt_points_in_segment = [(point, gt_labels[idx]) for idx, point in enumerate(gt_points) if is_point_in_segment(point, segment_data)]
                     gt_points_in_other_segment = [(point, gt_labels[idx]) for idx, point in enumerate(gt_points) if is_point_in_segment(point, other_segment_data)]
 
-                    #plot segment_data points and other_segment_data points
+                    # plot segment_data points and other_segment_data points
                     # plt.scatter(other_segment_data['Column'], -other_segment_data['Row'], color='red')
                     # plt.scatter(segment_data['Column'], -segment_data['Row'], color='blue')
                     # plt.show()
@@ -251,25 +245,35 @@ def merge_labels(image_df, gt_points, gt_labels):
     kde_dict = {label: estimate_density(gt_points[gt_labels == label], bandwidth=1.0) for label in unique_labels}
     assigned_densities = np.zeros(len(image_df))
 
-    for label in unique_labels:
-        label_indices = image_df['Label'] == label
-        expanded_label_points = image_df.loc[label_indices, ['Row', 'Column']].values
+    # Calculate densities for each segment
+    for segment_id, segment_data in segments:
+        label = segment_data['Label'].iloc[0]
+        expanded_label_points = segment_data[['Row', 'Column']].values
         if expanded_label_points.size == 0:
             continue
         densities_label = evaluate_density(kde_dict[label], expanded_label_points)
-        assigned_densities[label_indices] = densities_label
+        assigned_densities[segment_data.index] = densities_label
 
-    # Log transform and scale densities
-    # TODO: CALCULAR DENSIDAD TOTAL DE LA IMAGEN. GT / NUMERO TOTAL DE PIXELES. Despues normalizar las densidades con ese valor
     image_density = len(gt_points) / (image_df['Row'].max() * image_df['Column'].max())
     normalized_densities = assigned_densities / image_density
 
-    label_priorities = adjust_priorities_with_density(image_df, normalized_densities, density_factor=0.5)
+    # Calculate segment priorities
+    segment_priorities = calculate_segment_priorities(image_df, normalized_densities, density_factor=0.5)
+
+    # Process remaining segments not in chosen_segments_by_iou
+    remaining_segments = [seg for seg in segments if seg[0] not in chosen_segments_by_iou]
+    remaining_segments.sort(key=lambda seg: segment_priorities[seg[0]], reverse=True)
+
+    for segment_id, segment_data in remaining_segments:
+        if segment_id in chosen_segments_by_iou:
+            continue
+        merged_df = pd.concat([merged_df, segment_data])
+        chosen_segments_by_iou.add(segment_id)
 
     point_labels = {}
     label_counts = {}
     for index, row in image_df.iterrows():
-        if row['Segment'] in chosen_segments_by_iou:  # Check the set instead of DataFrame
+        if row['Segment'] in chosen_segments_by_iou:
             continue
         adjusted_point = (row['Row'], row['Column'])
         label = row['Label']
@@ -277,8 +281,7 @@ def merge_labels(image_df, gt_points, gt_labels):
         label_count = label_counts.get(adjusted_point, 0) + 1
         label_counts[adjusted_point] = label_count
         other_label = point_labels.get(adjusted_point, None)
-        if label_count > 1 and label_priorities[label] > label_priorities[other_label[1]]:
-            # print(f"Point {adjusted_point} has labels {label} and {other_label[1]}. Choosing {label} over {other_label[1]} with priorities {label_priorities[label]} and {label_priorities[other_label[1]]}")
+        if label_count > 1 and segment_priorities[row['Segment']] > segment_priorities[other_label[1]]:
             point_labels[adjusted_point] = (name, label)
         elif label_count == 1:
             point_labels[adjusted_point] = (name, label)
@@ -325,7 +328,7 @@ def generate_image(image_df, image, gt_points, color_dict, image_name, output_di
             point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
 
             # Get the color and add an alpha channel
-            color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
+            color = np.array([color_dict[str(row['Label'])][0] / 255.0, color_dict[str(row['Label'])][1] / 255.0, color_dict[str(row['Label'])][2] / 255.0, 1])
             blend_translucent_color(black, point[0], point[1], color, color[3])
     # print(f"Time taken by color the points in the image: {time.time() - start} seconds")
 
@@ -368,13 +371,15 @@ def generate_image_per_class(image_df, image, points, labels, color_dict, image_
     plt.savefig(output_dir + image_name + '_' + label_str + '_sparse.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close()
 
+    print('color_dict:', color_dict)
+
     # Color the points in the image
     for _, row in image_df.iterrows():
         if row['Column'] < black.shape[1] and row['Row'] < black.shape[0]:
             point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
 
             # Get the color and add an alpha channel
-            color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
+            color = np.array([color_dict[str(row['Label'])][0] / 255.0, color_dict[str(row['Label'])][1] / 255.0, color_dict[str(row['Label'])][2] / 255.0, 1])
             blend_translucent_color(black, point[0], point[1], color, color[3])
 
     plt.figure(figsize=figsize, dpi=dpi)
@@ -877,6 +882,7 @@ parser.add_argument("--color_dict", help="CSV file containing the color dictiona
 parser.add_argument("--generate_csv", help="Generate a sparse csv file", required=False, action='store_true')
 parser.add_argument("--frame", help="Frame size to crop the images", required=False, type=int, default=0)
 parser.add_argument("--gt_images", help="Directory containing the ground truth images. Just for visual comparison", required=False)
+parser.add_argument("-b", "--background_class", help="background class value (for grayscale, provide an integer; for color, provide a tuple)", required=True, default=0)
 args = parser.parse_args()
 
 remove_far_points = False
@@ -932,27 +938,30 @@ if args.dataset is None and (args.model == "superpixel" or args.model == "mixed"
 
 if args.color_dict:
     print("color dictionary provided. Loading color_dict...")
-    color_dict = pd.read_csv(args.color_dict).to_dict()
+    color_df = pd.read_csv(args.color_dict, header=None)
+    keys = color_df.iloc[0].tolist()
+    values = color_df.iloc[1:].values.tolist()
+    
+    # Create the dictionary
+    color_dict = {str(keys[i]): [row[i] for row in values] for i in range(len(keys))}
+    
     # Get the labels that are in self.color_dict.keys() but not in labels
-    extra_labels = set(color_dict.keys()) - set(unique_labels)
+    extra_labels = set(color_dict.keys()) - set(map(str, unique_labels))
 
     # Remove the extra labels from color_dict
     for label in extra_labels:
         del color_dict[label]
 
-    if set(unique_labels) != set(color_dict.keys()):
-        print('Labels in the .csv file and color_dict do not match:')
-        print('     Labels in unique_labels_str but not in color_dict:', set(unique_labels) - set(color_dict.keys()))
-        print('     Labels in color_dict but not in unique_labels_str:', set(color_dict.keys()) - set(unique_labels))
-
-        print('Creating a new color_dict randomly...')
-        color_dict = create_color_dict(unique_labels, output_dir)
+    assert set(map(str, unique_labels)) == set(color_dict.keys()), (
+        'Labels in the .csv file and color_dict do not match:\n'
+        f'     Labels in unique_labels but not in color_dict: {set(map(str, unique_labels)) - set(color_dict.keys())}\n'
+        f'     Labels in color_dict but not in unique_labels: {set(color_dict.keys()) - set(map(str, unique_labels))}'
+    )
+        
 else:
     if generate_eval_images:
-        print("--color_dict not provided. Colors will be generated randomly.")
-        color_dict = create_color_dict(unique_labels, output_dir)
-        # Order unique_labels_str in the way that they appear in color_dict
-        labels = [label for label in color_dict.keys() if label in labels]
+        # Ensure args.color_dict is None
+        assert args.color_dict is None, "Expected args.color_dict to be None when generating evaluation images without a provided color dictionary."
     else:
         color_dict = None
         labels = input_df['Label'].unique().tolist()
@@ -1043,32 +1052,6 @@ if not isinstance(unique_labels[0], str):
     # Include the class 0 and assign it a specific color (e.g., black)
     label_colors[0] = (0, 0, 0)
 
-    # print("Label colors:")
-    # for label in sorted(label_colors.keys()):
-    #     color = label_colors[label]
-    #     print(f"{color}")
-
-    # # Visualize the colors in a grid
-    # grid_size = int(np.ceil(np.sqrt(total_colors)))
-    # fig, ax = plt.subplots(grid_size, grid_size, figsize=(10, 10))
-
-    # for i, label in enumerate(sorted(label_colors.keys())):
-    #     row = i // grid_size
-    #     col = i % grid_size
-    #     color = label_colors[label]
-    #     ax[row, col].imshow([[color]], aspect='auto')
-    #     ax[row, col].axis('off')
-    #     ax[row, col].set_title(f"Label {label}", fontsize=8)
-
-    # # Hide any unused subplots
-    # for j in range(i + 1, grid_size * grid_size):
-    #     row = j // grid_size
-    #     col = j % grid_size
-    #     ax[row, col].axis('off')
-
-    # plt.tight_layout()
-    # plt.show()
-
 for image_name in image_names_csv:
     image_path = os.path.join(image_dir, image_name)
     image = cv2.imread(image_path)
@@ -1136,29 +1119,23 @@ for image_name in image_names_csv:
         # Concatenate expanded_sam with points_not_in_sam and remove duplicates based on Row and Column
         output_df = pd.concat([expanded_sam, points_not_in_sam], ignore_index=True).drop_duplicates(subset=["Row", "Column"])
 
-        rgb_flag = isinstance(labels[0], str)
+        rgb_flag = color_dict is not None
+        background = args.background_class
 
-        if rgb_flag:
-            color_mask_sam = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
-            color_mask_spx = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
-            color_mask_mix = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
-        
-        else:
-            color_mask_sam = np.full((image.shape[0], image.shape[1], 3), fill_value=(0, 0, 0), dtype=np.uint8)
-            color_mask_spx = np.full((image.shape[0], image.shape[1], 3), fill_value=(0, 0, 0), dtype=np.uint8)
-            color_mask_mix = np.full((image.shape[0], image.shape[1], 3), fill_value=(0, 0, 0), dtype=np.uint8)
-            labels = [int(i) for i in labels]
+        color_mask_sam = np.full((image.shape[0], image.shape[1], 3), fill_value=(background, background, background), dtype=np.uint8)
+        color_mask_spx = np.full((image.shape[0], image.shape[1], 3), fill_value=(background, background, background), dtype=np.uint8)
+        color_mask_mix = np.full((image.shape[0], image.shape[1], 3), fill_value=(background, background, background), dtype=np.uint8)
 
         mask_color_dir = os.path.join(output_dir, 'labels_mosaic')
         os.makedirs(mask_color_dir, exist_ok=True)
 
-        for i, label in enumerate(labels, start=1):
+        for label in unique_labels_str_i:
             expanded_i_sam = expanded_sam[expanded_sam['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
             expanded_i_spx = expanded_spx[expanded_spx['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
             expanded_i_mix = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
 
             if rgb_flag:
-                color = np.array(list(color_dict[label].values()))
+                color = np.array(color_dict[str(label)])
             else:
                 #grayscale value
                 color = label_colors[label]
@@ -1218,30 +1195,33 @@ for image_name in image_names_csv:
     processed_images += 1
     print(f"{processed_images}/{len(image_names_csv)}\n")
 
-    # Initialize masks
-    mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+    background = args.background_class
 
-    # Check if labels are strings
-    if isinstance(labels[0], str):
+    # Initialize the mask with the background value
+    mask = np.full((image.shape[0], image.shape[1]), background, dtype=np.uint8)
+
+    if color_dict is not None:
         color_mask = np.full((image.shape[0], image.shape[1], 3), fill_value=(64, 0, 64), dtype=np.uint8)
         mask_color_dir = os.path.join(output_dir, 'labels_rgb')
         os.makedirs(mask_color_dir, exist_ok=True)
 
-        for i, label in enumerate(labels, start=1):
+        for i, label in enumerate(unique_labels_str_i, start=0):
             expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
-            color = np.array(list(color_dict[label].values()))
-            mask[expanded_i[:, 0], expanded_i[:, 1]] = i
+            color = np.array(color_dict[str(label)])
+            gray = np.clip(i, 0, 255).astype(np.uint8)
+            mask[expanded_i[:, 0], expanded_i[:, 1]] = gray
             color_mask[expanded_i[:, 0], expanded_i[:, 1]] = color
 
         # Save color mask as PNG
         color_mask = cv2.cvtColor(color_mask, cv2.COLOR_RGB2BGR)
         cv2.imwrite(os.path.join(mask_color_dir, os.path.splitext(image_name)[0] + '.png'), color_mask)
-        unique_labels_int = list(range(1, len(labels) + 1))
+        unique_labels_int = [int(i) for i in unique_labels_str_i]
     else:
         unique_labels_int = [int(i) for i in labels]
 
     for label in unique_labels_int:
         expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+        label = np.clip(label, 0, 255).astype(np.uint8)
         mask[expanded_i[:, 0], expanded_i[:, 1]] = label
 
     # Save grayscale mask as PNG

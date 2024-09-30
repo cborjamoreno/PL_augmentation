@@ -8,15 +8,11 @@
             "name": "Python Debugger: Current File with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/densePoints.py",
+            "program": "${workspaceFolder}/evaluate_MosaicsUCSD.py",
             "console": "integratedTerminal",
             "args": [
-                "--input_dir", "../Datasets/SUIM/train/images/",
-                "--output_dir", "SUIM/SUIM_mixed_100_test/",
-                "-gt", "SUIM_annotations_100.csv",
-                "--dataset", "SUIM",
-                "--gt_images", "../Datasets/SUIM/train/labels/",
-                "--color_dict", "SUIM_color_dict.csv"
+                "-p", "MosaicsUCSD/MosaicsUCSD_superpixel_300_test/labels/",
+                "-gt", "../Datasets/MosaicsUCSD/train/labels/",
             ]
         }
     ]
