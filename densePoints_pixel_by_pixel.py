@@ -114,96 +114,20 @@ def chunk_dataframe(df, chunk_size):
 
 #     return overlapping_pixels.reset_index(drop=True)
 
-def create_superpixels(segment_data, min_segments=5, max_segments=50):
+def check_pixel_overlap(segment_data_1, segment_data_2):
     """
-    Create superpixels for the given segment data.
-    The number of superpixels is determined by the area of the segment.
+    Check and return overlapping pixels between two segments.
     """
-    segment_area = segment_data.shape[0]  # Number of pixels in the segment
-
-    # Determine the number of superpixels based on segment size
-    num_segments = int(np.clip(segment_area // 100, min_segments, max_segments))
-
-    # Reshape the segment data to create a superpixel segmentation
-    image_shape = (segment_data['Row'].max() + 1, segment_data['Column'].max() + 1)
-    image_array = np.zeros(image_shape, dtype=np.uint8)
-
-
-    for _, row in segment_data.iterrows():
-        image_array[row['Row'], row['Column']] = 1  # Assign pixel to segment
-
-    if image_array.ndim == 2:
-        # Grayscale image
-        channel_axis = None
-    else:
-        # Multichannel image
-        channel_axis = -1
-
-    superpixels = slic(image_array, n_segments=num_segments, compactness=10, start_label=1, channel_axis=channel_axis)
-    return superpixels
-
-def check_pixel_overlap(segment_data_1, segment_data_2, superpixels_1, superpixels_2):
-    """
-    Check and return overlapping pixels between two segments based on superpixel labels.
-    """
-    # Add superpixel labels to the original segment data
-    segment_data_1['Superpixel'] = superpixels_1[segment_data_1['Row'].values, segment_data_1['Column'].values]
-    segment_data_2['Superpixel'] = superpixels_2[segment_data_2['Row'].values, segment_data_2['Column'].values]
-
-    # Merge both DataFrames on Row, Column, and Superpixel to find overlapping pixels
+    # Merge both DataFrames on Row and Column to find overlapping pixels
     overlapping_pixels = pd.merge(
         segment_data_1,
         segment_data_2,
-        on=['Row', 'Column', 'Superpixel'],
+        on=['Row', 'Column'],
         suffixes=('_1', '_2'),
         how='inner'
     ).reset_index(drop=True)
 
     return overlapping_pixels
-
-def check_superpixel_overlap(segment_data_1, segment_data_2, superpixels_1, superpixels_2):
-    """
-    Check and return overlapping superpixels between two segments.
-    """
-    # Ensure 'Row' and 'Column' are integers
-    segment_data_1['Row'] = segment_data_1['Row'].astype(int)
-    segment_data_1['Column'] = segment_data_1['Column'].astype(int)
-    segment_data_2['Row'] = segment_data_2['Row'].astype(int)
-    segment_data_2['Column'] = segment_data_2['Column'].astype(int)
-
-    # Add superpixel labels to the original segment data
-    segment_data_1['Superpixel'] = superpixels_1[segment_data_1['Row'].values, segment_data_1['Column'].values]
-    segment_data_2['Superpixel'] = superpixels_2[segment_data_2['Row'].values, segment_data_2['Column'].values]
-
-    # Find unique superpixels in both segments
-    unique_superpixels_1 = segment_data_1['Superpixel'].unique()
-    unique_superpixels_2 = segment_data_2['Superpixel'].unique()
-
-    # Create a DataFrame to hold overlapping superpixels
-    overlapping_superpixels = []
-
-    # Start timing the overlap check
-    overlap_start_time = time.time()
-
-    for sp1 in unique_superpixels_1:
-        for sp2 in unique_superpixels_2:
-            # Check if superpixels overlap by checking the presence of pixels
-            if any(segment_data_1['Superpixel'] == sp1) and any(segment_data_2['Superpixel'] == sp2):
-                overlap_pixels = segment_data_1[segment_data_1['Superpixel'] == sp1].merge(
-                    segment_data_2[segment_data_2['Superpixel'] == sp2],
-                    on=['Row', 'Column'],
-                    how='inner'
-                )
-                
-                if not overlap_pixels.empty:
-                    overlapping_superpixels.append((sp1, sp2, overlap_pixels))
-
-    # End timing the overlap check
-    overlap_end_time = time.time()
-    overlap_elapsed_time = overlap_end_time - overlap_start_time
-    # print(f"Time taken for superpixel overlap check: {overlap_elapsed_time:.4f} seconds")
-
-    return overlapping_superpixels
 
 def gather_gt_points_from_segment_area(segment_data, gt_points_df, segment_label):
     """
@@ -281,25 +205,21 @@ def merge_labels(image_df, gt_points_df):
     # Start timing
     start_segment_comparison = time.time()
 
-    # Calculate bounding boxes for all segments
-    bounding_boxes = {}
+    # Compare segments
     for segment_id, segment_data in segments:
+        # Calculate the bounding box for the current segment
         x_min, y_min = segment_data[['Row', 'Column']].min()
         x_max, y_max = segment_data[['Row', 'Column']].max()
-        bounding_boxes[segment_id] = (x_min, y_min, x_max, y_max)
-
-    # Initialize the dictionary for superpixels
-    segment_superpixels = {}
-
-    # Compare segments and create superpixels only if bounding boxes overlap
-    for segment_id, segment_data in segments:
-        bounding_box_1 = bounding_boxes[segment_id]
+        bounding_box_1 = (x_min, y_min, x_max, y_max)
 
         for other_segment_id, other_segment_data in segments:
             if other_segment_id == segment_id:
                 continue
 
-            bounding_box_2 = bounding_boxes[other_segment_id]
+            # Calculate the bounding box for the other segment
+            x_min_other, y_min_other = other_segment_data[['Row', 'Column']].min()
+            x_max_other, y_max_other = other_segment_data[['Row', 'Column']].max()
+            bounding_box_2 = (x_min_other, y_min_other, x_max_other, y_max_other)
 
             # Check for bounding box overlap
             if (bounding_box_1[0] > bounding_box_2[2] or  # left of other
@@ -315,29 +235,17 @@ def merge_labels(image_df, gt_points_df):
             if pair in compared_pairs:
                 continue
 
-            # Create superpixels for the segments if not already created
-            if segment_id not in segment_superpixels:
-                segment_superpixels[segment_id] = create_superpixels(segment_data)
-            if other_segment_id not in segment_superpixels:
-                segment_superpixels[other_segment_id] = create_superpixels(other_segment_data)
+            overlapping_pixels = check_pixel_overlap(segment_data, other_segment_data)
 
-            # Get the superpixel labels for both segments
-            superpixels_1 = segment_superpixels[segment_id]
-            superpixels_2 = segment_superpixels[other_segment_id]
+            # If there is an overlap and the labels differ
+            if not overlapping_pixels.empty:
+                # Skip resolving if both segments have the same label
+                if segment_data['Label'].iloc[0] == other_segment_data['Label'].iloc[0]:
+                    compared_pairs.add(pair)  # Mark the pair as compared
+                    continue
 
-            # Pass the superpixel labels to check for overlaps
-            overlapping_superpixels = check_superpixel_overlap(segment_data, other_segment_data, superpixels_1, superpixels_2)
-
-            # If there are overlapping superpixels
-            if overlapping_superpixels:
-                # Iterate through overlapping superpixels
-                for sp1, sp2, overlap_pixels in overlapping_superpixels:
-                    # Skip resolving if both segments have the same label
-                    if segment_data['Label'].iloc[0] == other_segment_data['Label'].iloc[0]:
-                        continue
-
-                    # Add segments to the list for merging
-                    segments_to_merge.append((segment_id, other_segment_id, overlap_pixels))
+                # Add segments to the list for merging
+                segments_to_merge.append((segment_id, other_segment_id, overlapping_pixels))
 
             # Mark this pair as compared
             compared_pairs.add(pair)
@@ -345,6 +253,10 @@ def merge_labels(image_df, gt_points_df):
     # Optionally, print the time taken for the comparison
     end_segment_comparison = time.time()
     print(f"Segment comparison took {end_segment_comparison - start_segment_comparison:.2f} seconds.")
+
+
+
+    print(f"Time taken for segment comparison: {time.time() - start_segment_comparison} seconds")
 
     start_overlap_resolution = time.time()
 
@@ -813,8 +725,6 @@ class SAMLabelExpander(LabelExpander):
         
     def expand_labels(self, points, labels, unique_labels_str, image, image_name, eval_image_dir=None):
         expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label", "Segment"])
-        
-        time_start = time.time()
 
         # crop the image BORDER_SIZE pixels from each side
         cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
@@ -826,7 +736,6 @@ class SAMLabelExpander(LabelExpander):
 
         self.gt_points = np.array([])
         self.gt_labels = np.array([])
-
 
         # use SAM to expand the points into masks. Artificial new GT points.
         for i in range(len(unique_labels_str)):
@@ -936,8 +845,6 @@ class SAMLabelExpander(LabelExpander):
             
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)            
             print(f'{len(_points_pred)} points of class \'{unique_labels_str[i]}\' expanded to {len(new_points)} points')
-
-        print(f"Time taken by expand_labels: {time.time() - time_start} seconds")
 
         # Merge the dense labels
         gt_points = self.gt_points - BORDER_SIZE

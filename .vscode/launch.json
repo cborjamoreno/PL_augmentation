@@ -8,11 +8,16 @@
             "name": "Python Debugger: Current File with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/evaluate_MosaicsUCSD.py",
+            "program": "${workspaceFolder}/densePoints.py",
             "console": "integratedTerminal",
             "args": [
-                "-p", "MosaicsUCSD/MosaicsUCSD_superpixel_300_test/labels/",
-                "-gt", "../Datasets/MosaicsUCSD/train/labels/",
+                "--input_dir", "../Datasets/MosaicsUCSD/train/images/FR3_1536_2048_0_512.png",
+                "--output_dir"," MosaicsUCSD/MosaicsUCSD_mixed_300_test_smart/",
+                "-gt", "smart_MosaicsUCSD_annotations_FR3_1536_2048_0_512_2_300.csv",
+                "--dataset", "MosaicsUCSD",
+                "--gt_images", "../Datasets/MosaicsUCSD/train/labels_colored/",
+                "--color_dict", "../Datasets/MosaicsUCSD/MosaicsUCSD_color_dict.csv",
+                "-b", "34", "--generate_eval_images"
             ]
         }
     ]
