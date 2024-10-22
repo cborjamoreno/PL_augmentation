@@ -3,48 +3,17 @@ import cv2
 import argparse
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-# Function to calculate PA, mPA, and mIoU
-def calculate_segmentation_metrics(pred, label, num_classes):
-    """
-    Calculate Pixel Accuracy (PA), Mean Pixel Accuracy (mPA), and Mean IoU (mIoU)
-    Args:
-        pred: numpy array of predicted segmentation mask
-        label: numpy array of ground truth mask
-        num_classes: number of classes in the segmentation
-    Returns:
-        PA, mPA, mIoU
-    """
-    hist = np.zeros((num_classes, num_classes))
-    for p, l in zip(pred.flatten(), label.flatten()):
-        if l < num_classes and p < num_classes:  # Only count valid classes
-            hist[l, p] += 1
-
-    # Pixel Accuracy (PA)
-    PA = np.diag(hist).sum() / hist.sum()
-
-    # Mean Pixel Accuracy (mPA)
-    class_acc = np.diag(hist) / hist.sum(axis=1)
-    mPA = np.nanmean(class_acc)
-
-    # Mean Intersection over Union (mIoU)
-    intersection = np.diag(hist)
-    union = hist.sum(axis=1) + hist.sum(axis=0) - np.diag(hist)
-    IoU = intersection / union
-    mIoU = np.nanmean(IoU)
-
-    return PA, mPA, mIoU
-
-# Argument parsing
 parser = argparse.ArgumentParser()
 parser.add_argument("-p", "--images_pth", help="path of expanded images", required=True)
 parser.add_argument("-gt", "--ground_truth_pth", help="path of ground truth images", required=True)
+parser.add_argument("-bg", "--background_class", help="background class label", type=int, default=0)
 args = parser.parse_args()
 
 image_pth = args.images_pth
 gt_pth = args.ground_truth_pth
+background_class = int(args.background_class)
 
 if not os.path.exists(image_pth):
     print("Image path does not exist")
@@ -54,8 +23,41 @@ if not os.path.exists(gt_pth):
     print("Ground truth path does not exist")
     exit()
 
-# Define the number of classes (including background)
-NUM_CLASSES = 34  # Adjust if needed, assuming 34 classes + background (34)
+def calculate_metrics(img, gt, background_class):
+    # Calculate PA (Pixel Accuracy)
+    correct_pixels = np.sum(img == gt)
+    total_pixels = gt.size
+    pa = correct_pixels / total_pixels
+
+    # Exclude background class for MPA and IoU calculation
+    valid_pixels_mask = gt != background_class
+
+    # Apply mask to exclude background
+    img_valid = img[valid_pixels_mask]
+    gt_valid = gt[valid_pixels_mask]
+
+    # Calculate per-class IoU and MPA
+    unique_classes = np.unique(gt_valid)
+
+    class_iou = {}
+    class_mpa = []
+
+    for cls in unique_classes:
+        gt_cls = gt_valid == cls
+        img_cls = img_valid == cls
+
+        mpa_cls = np.sum(gt_cls & img_cls) / np.sum(gt_cls) if np.sum(gt_cls) != 0 else 0
+        class_mpa.append(mpa_cls)
+
+        intersection = np.sum(gt_cls & img_cls)
+        union = np.sum(gt_cls | img_cls)
+
+        iou = intersection / union if union != 0 else 0
+        class_iou[cls] = iou
+
+    mean_mpa = np.mean(class_mpa) if class_mpa else 0
+    mean_iou = np.mean(list(class_iou.values())) if class_iou else 0
+    return pa, mean_mpa, mean_iou, class_iou, class_mpa
 
 def process_image(filename):
     img = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
@@ -69,41 +71,50 @@ def process_image(filename):
         return None
 
     if img.shape != gt.shape:
-        print(f"Shape mismatch: {img.shape} != {gt.shape}")
+        print(img.shape, gt.shape)
         return None
 
-    # Calculate the metrics for this image
-    pa, mpa, miou = calculate_segmentation_metrics(img, gt, NUM_CLASSES)
-    
+    metrics = calculate_metrics(img, gt, background_class)
     del img
     del gt
-    return pa, mpa, miou
+    return metrics
 
-# Processing the images and aggregating the metrics
 image_files = glob.glob(image_pth + '/*.*')
 
-total_pa = 0
-total_mpa = 0
-total_miou = 0
-total_images = 0
+all_pa = []
+all_mpa = []
+all_miou = []
+class_iou_aggregate = {}
 
 with tqdm(total=len(image_files), desc="Evaluating images") as pbar:
     for filename in image_files:
         result = process_image(filename)
         if result is not None:
-            pa, mpa, miou = result
-            total_pa += pa
-            total_mpa += mpa
-            total_miou += miou
-            total_images += 1
+            pa, mean_mpa, mean_iou, class_iou, class_mpa = result
+            all_pa.append(pa)
+            all_mpa.append(mean_mpa)
+            all_miou.append(mean_iou)
+
+            for cls, iou in class_iou.items():
+                if cls not in class_iou_aggregate:
+                    class_iou_aggregate[cls] = []
+                class_iou_aggregate[cls].append(iou)
 
         pbar.update(1)
 
-# Calculate averages across all images
-mean_pa = total_pa / total_images if total_images > 0 else 0
-mean_mpa = total_mpa / total_images if total_images > 0 else 0
-mean_miou = total_miou / total_images if total_images > 0 else 0
+# Calculate final measurements
+final_pa = np.mean(all_pa)
+final_mpa = np.mean(all_mpa)
+final_miou = np.mean(all_miou)
 
-print(f"\nMean Pixel Accuracy (PA): {mean_pa}")
-print(f"Mean Pixel Accuracy per class (MPA): {mean_mpa}")
-print(f"Mean Intersection over Union (MIoU): {mean_miou}")
+print(f"Final PA: {final_pa}")
+print(f"Final MPA: {final_mpa}")
+print(f"Final MIoU: {final_miou}")
+
+# Sort the items by cls
+sorted_mean_class_iou = sorted(class_iou_aggregate.items())
+
+# Print the sorted items
+for cls, iou_list in sorted_mean_class_iou:
+    mean_iou = np.mean(iou_list)
+    print(f"{mean_iou:.3f}")

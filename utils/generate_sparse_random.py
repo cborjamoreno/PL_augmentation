@@ -61,47 +61,19 @@ def calculate_centroid(mask):
     centroid = np.mean(indices, axis=0)
     return int(centroid[0]), int(centroid[1])
 
-def generate_grid_points(image, num_labels=300):
-    height, width = image.shape[:2]
-    aspect_ratio = height / width
-    sqrt_labels_adjusted = np.sqrt(num_labels / aspect_ratio)
-    n_i_points = round(sqrt_labels_adjusted * aspect_ratio)  # Adjusted number of labels per column
-    n_j_points = round(sqrt_labels_adjusted)  # Adjusted number of labels per row
+def generate_random_points(image_shape, num_labels=300):
+    height, width = image_shape[:2]
+    points = set()
 
-    # Adjust the number of points to be as close as possible to num_labels
-    while n_i_points * n_j_points > num_labels:
-        if n_i_points >= n_j_points:
-            n_i_points -= 1
-        else:
-            n_j_points -= 1
-
-    space_betw_i = height // n_i_points  # space between every label
-    space_betw_j = width // n_j_points
-    start_i = (height - space_betw_i * (n_i_points - 1)) // 2  # pixel to start labeling
-    start_j = (width - space_betw_j * (n_j_points - 1)) // 2
-
-    points = []
-    for i in range(n_i_points):
-        for j in range(n_j_points):
-            pos_i = start_i + i * space_betw_i
-            pos_j = start_j + j * space_betw_j
-            points.append((pos_i, pos_j))
-
-    # Add extra points if needed
     while len(points) < num_labels:
-        extra_i = random.randint(0, height - 1)
-        extra_j = random.randint(0, width - 1)
-        if (extra_i, extra_j) not in points:
-            points.append((extra_i, extra_j))
+        pos_i = random.randint(0, height - 1)
+        pos_j = random.randint(0, width - 1)
+        points.add((pos_i, pos_j))
 
-    # Remove excess points if needed
-    if len(points) > num_labels:
-        points = random.sample(points, num_labels)
-
-    return points
+    return list(points)
 
 def process_image(args):
-    gt_filename, img_filename, num_labels, image_type, color_dict = args
+    gt_filename, img_filename, num_labels, image_type, color_dict, points = args
     data = []
 
     # Ensure num_labels is an integer
@@ -110,25 +82,11 @@ def process_image(args):
     # Read the ground truth image
     img = cv2.imread(img_filename, cv2.COLOR_BGR2RGB)
 
-    # print('image_type', image_type)
-
     if image_type == 'grayscale':
         gt_img = cv2.imread(gt_filename, cv2.IMREAD_GRAYSCALE)
     else:
         gt_img = cv2.imread(gt_filename, cv2.IMREAD_COLOR)
         gt_img = cv2.cvtColor(gt_img, cv2.COLOR_BGR2RGB)
-    
-    # Print the unique colors in gt_img
-    if len(gt_img.shape) == 2:  # Grayscale image
-        unique_colors = np.unique(gt_img)
-    else:  # RGB image
-        unique_colors = np.unique(gt_img.reshape(-1, gt_img.shape[2]), axis=0)
-
-    # print('Unique colors in gt_img:', unique_colors)
-
-    # print('color_dict', color_dict)
-    
-    points = generate_grid_points(img, num_labels)
 
     # Get the extension from the img_filename
     _, ext = os.path.splitext(img_filename)
@@ -184,8 +142,15 @@ def process_images(images_pth, ground_truth_pth, output_file, num_labels=300, im
     # Ensure num_labels is an integer
     num_labels = int(num_labels)
 
+    # Generate random points once using the shape of the first image
+    if image_pairs:
+        first_image = cv2.imread(image_pairs[0][1], cv2.COLOR_BGR2RGB)
+        points = generate_random_points(first_image.shape, num_labels)
+    else:
+        points = []
+
     with Pool(cpu_count()) as pool:
-        results = list(tqdm(pool.imap(process_image, [(gt, img, num_labels, image_type, color_dict) for gt, img in image_pairs]), total=len(image_pairs), desc="Processing images"))
+        results = list(tqdm(pool.imap(process_image, [(gt, img, num_labels, image_type, color_dict, points) for gt, img in image_pairs]), total=len(image_pairs), desc="Processing images"))
 
     for result in results:
         data.extend(result)

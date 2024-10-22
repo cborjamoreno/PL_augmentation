@@ -19,8 +19,7 @@ shift
 
 #For each value (N), creates segmentations of N segments
 for i in $@; do
- 	ML_Superpixels/bin/$comando --input $data_train --output $out_train/superpixels_$i --contour --csv  --superpixels   $i
+ 	ML_Superpixels/bin/$comando --input $data_train --output $out_train/superpixels_$i --contour --csv  --superpixels $i > /dev/null 2>&1
  	# ML_Superpixels/bin/$comando --input $data_test --output $out_test/superpixels_$i --contour --csv  --superpixels   $i
  done
- 
- echo GENERATION COMPLETED
+

@@ -68,4 +68,4 @@ for folder in folders:
         unique_values = np.unique(sparse)
         # print(f"Unique values in sparse GT for {image_name}: {unique_values}")
 
-print('GENERATION COMPLETED')
+# print('GENERATION COMPLETED')
