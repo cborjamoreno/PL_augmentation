@@ -94,119 +94,6 @@ def chunk_dataframe(df, chunk_size):
     for start in range(0, df.shape[0], chunk_size):
         yield df.iloc[start:start + chunk_size]
 
-# def check_pixel_overlap(segment_data_1, segment_data_2):
-#     """
-#     Check and return overlapping pixels between two segments using chunking.
-#     """
-#     overlapping_pixels = pd.DataFrame(columns=segment_data_1.columns)  # Initialize an empty DataFrame
-
-#     for chunk_1 in chunk_dataframe(segment_data_1, chunk_size=100):
-#         for chunk_2 in chunk_dataframe(segment_data_2, chunk_size=100):
-#             # Merge both DataFrames on Row and Column to find overlapping pixels
-#             overlap = pd.merge(
-#                 chunk_1,
-#                 chunk_2,
-#                 on=['Row', 'Column'],
-#                 suffixes=('_1', '_2'),
-#                 how='inner'
-#             )
-#             overlapping_pixels = pd.concat([overlapping_pixels, overlap], ignore_index=True)
-
-#     return overlapping_pixels.reset_index(drop=True)
-
-def create_superpixels(segment_data, min_segments=1, max_segments=50):
-    """
-    Create superpixels for the given segment data.
-    The number of superpixels is determined by the area of the segment.
-    """
-    segment_area = segment_data.shape[0]  # Number of pixels in the segment
-
-    # Determine the number of superpixels based on segment size
-    num_segments = int(np.clip(segment_area // 100, min_segments, max_segments))
-
-    # print(f"Creating {num_segments} superpixels for segment with {segment_area} pixels")
-
-    # Reshape the segment data to create a superpixel segmentation
-    image_shape = (segment_data['Row'].max() + 1, segment_data['Column'].max() + 1)
-    image_array = np.zeros(image_shape, dtype=np.uint8)
-
-
-    for _, row in segment_data.iterrows():
-        image_array[row['Row'], row['Column']] = 1  # Assign pixel to segment
-
-    if image_array.ndim == 2:
-        # Grayscale image
-        channel_axis = None
-    else:
-        # Multichannel image
-        channel_axis = -1
-
-    superpixels = slic(image_array, n_segments=num_segments, compactness=10, start_label=1, channel_axis=channel_axis)
-    return superpixels
-
-def check_pixel_overlap(segment_data_1, segment_data_2, superpixels_1, superpixels_2):
-    """
-    Check and return overlapping pixels between two segments based on superpixel labels.
-    """
-    # Add superpixel labels to the original segment data
-    segment_data_1['Superpixel'] = superpixels_1[segment_data_1['Row'].values, segment_data_1['Column'].values]
-    segment_data_2['Superpixel'] = superpixels_2[segment_data_2['Row'].values, segment_data_2['Column'].values]
-
-    # Merge both DataFrames on Row, Column, and Superpixel to find overlapping pixels
-    overlapping_pixels = pd.merge(
-        segment_data_1,
-        segment_data_2,
-        on=['Row', 'Column', 'Superpixel'],
-        suffixes=('_1', '_2'),
-        how='inner'
-    ).reset_index(drop=True)
-
-    return overlapping_pixels
-
-def check_superpixel_overlap(segment_data_1, segment_data_2, superpixels_1, superpixels_2):
-    """
-    Check and return overlapping superpixels between two segments.
-    """
-    # Ensure 'Row' and 'Column' are integers
-    segment_data_1['Row'] = segment_data_1['Row'].astype(int)
-    segment_data_1['Column'] = segment_data_1['Column'].astype(int)
-    segment_data_2['Row'] = segment_data_2['Row'].astype(int)
-    segment_data_2['Column'] = segment_data_2['Column'].astype(int)
-
-    # Add superpixel labels to the original segment data
-    segment_data_1['Superpixel'] = superpixels_1[segment_data_1['Row'].values, segment_data_1['Column'].values]
-    segment_data_2['Superpixel'] = superpixels_2[segment_data_2['Row'].values, segment_data_2['Column'].values]
-
-    # Find unique superpixels in both segments
-    unique_superpixels_1 = segment_data_1['Superpixel'].unique()
-    unique_superpixels_2 = segment_data_2['Superpixel'].unique()
-
-    # Create a DataFrame to hold overlapping superpixels
-    overlapping_superpixels = []
-
-    # Start timing the overlap check
-    overlap_start_time = time.time()
-
-    for sp1 in unique_superpixels_1:
-        for sp2 in unique_superpixels_2:
-            # Check if superpixels overlap by checking the presence of pixels
-            if any(segment_data_1['Superpixel'] == sp1) and any(segment_data_2['Superpixel'] == sp2):
-                overlap_pixels = segment_data_1[segment_data_1['Superpixel'] == sp1].merge(
-                    segment_data_2[segment_data_2['Superpixel'] == sp2],
-                    on=['Row', 'Column'],
-                    how='inner'
-                )
-                
-                if not overlap_pixels.empty:
-                    overlapping_superpixels.append((sp1, sp2, overlap_pixels))
-
-    # End timing the overlap check
-    overlap_end_time = time.time()
-    overlap_elapsed_time = overlap_end_time - overlap_start_time
-    # print(f"Time taken for superpixel overlap check: {overlap_elapsed_time:.4f} seconds")
-
-    return overlapping_superpixels
-
 def gather_gt_points_from_segment_area(region_coords, gt_points, gt_labels, segment_label):
     """
     Gather ground truth points that are within the region_coords and match the segment_label.
@@ -225,43 +112,6 @@ def gather_gt_points_from_segment_area(region_coords, gt_points, gt_labels, segm
             filtered_gt_labels.append(segment_label)
 
     return np.array(filtered_gt_points), filtered_gt_labels
-
-def calculate_closest_label(expanded_label_points, gt_points, gt_labels):
-    """
-    Calculate the label for each expanded point based on the closest GT point.
-    """
-    if len(gt_points) == 0:
-        return np.zeros(len(expanded_label_points), dtype=int)  # No GT points, assign default label
-    
-    # Calculate distances from each expanded point to all GT points
-    distances = cdist(expanded_label_points, gt_points)
-    
-    # Find the index of the closest GT point for each expanded point
-    closest_gt_idx = np.argmin(distances, axis=1)
-    
-    # Get the label of the closest GT point
-    closest_labels = gt_labels[closest_gt_idx]
-    
-    return closest_labels
-
-def resolve_overlaps(overlapping_pixels, combined_gt_points, combined_gt_labels,
-                     _, __):
-    """
-    Resolve overlapping region by assigning each pixel the label of the closest GT point.
-    """
-    expanded_label_points = overlapping_pixels[['Row', 'Column']].values.astype(float)
-
-    combined_gt_points = np.array(combined_gt_points)
-    if combined_gt_points.ndim == 1:
-        combined_gt_points = combined_gt_points.reshape(-1, 2)
-
-    # Calculate the closest label for each pixel based on GT points
-    resolved_labels = calculate_closest_label(expanded_label_points, combined_gt_points, combined_gt_labels)
-
-    # Update the labels in the overlap region
-    overlapping_pixels['Label'] = resolved_labels
-
-    return overlapping_pixels
 
 def merge_labels(image_df, gt_points, gt_labels):
     """
@@ -414,11 +264,15 @@ def merge_labels(image_df, gt_points, gt_labels):
 
             # Step 4: Calculate distances between the centroid and combined GT points
             centroid_tuple = tuple(overlap_centroid)
-            if centroid_tuple not in distance_cache:
+            if centroid_tuple in distance_cache:
+                if len(distance_cache[centroid_tuple]) != len(combined_gt_points):
+                    distances = np.linalg.norm(combined_gt_points - overlap_centroid, axis=1)
+                    distance_cache[centroid_tuple] = distances
+                else:
+                    distances = distance_cache[centroid_tuple]
+            else:
                 distances = np.linalg.norm(combined_gt_points - overlap_centroid, axis=1)
                 distance_cache[centroid_tuple] = distances
-            else:
-                distances = distance_cache[centroid_tuple]
 
             # print('centroid:', overlap_centroid)
             # print('distance of centroid to GT points:', distances)
@@ -819,6 +673,18 @@ class SAMLabelExpander(LabelExpander):
             filtered_points_all.append(_points)
             filtered_labels_all.append(_labels)
 
+        all_points = np.concatenate(filtered_points_all, axis=0)
+        all_labels = np.concatenate(filtered_labels_all, axis=0)
+
+        # Randomly select 5% of the points
+        num_points = len(all_points)
+        num_to_select = int(num_points * 0)  # Select 5% of points
+        selected_indices = np.random.choice(num_points, num_to_select, replace=False)
+
+        # Filter points and labels based on selected indices
+        all_points = all_points[selected_indices]
+        all_labels = all_labels[selected_indices]
+
         # Now expand each label's points
         for i, (_points, _labels) in enumerate(zip(filtered_points_all, filtered_labels_all)):
 
@@ -848,24 +714,44 @@ class SAMLabelExpander(LabelExpander):
             expanded_points_set = set()  # Optimized existence check
 
             for p, l in zip(_points_pred, _labels_ones):
+
                 point_row, point_column = p[1], p[0]
                 label_str = unique_labels_str[i]
+
+                # Filter points where the corresponding label is not equal to label_str
+                other_label_gt_points = [point for point, label in zip(all_points, all_labels) if label != label_str]
+                
+                # Convert other_label_gt_points to a 2D array
+                other_label_gt_points = np.array(other_label_gt_points).reshape(-1, 2)
+                
+                # Create a list of zeros of the same length as other_label_gt_points
+                zero_list = [0] * len(other_label_gt_points)
 
                 if (point_row, point_column, label_str) in expanded_points_set:
                     continue
 
-                _, _, logits = self.predictor.predict(
-                    point_coords=np.array([p]),
-                    point_labels=np.array([l]),
+                # Concatenate the current point 'p' with 'other_label_gt_points'
+                point_coords = np.concatenate((np.array([p]), other_label_gt_points), axis=0)
+                
+                # Concatenate the current label 'l' with the 'zero_list'
+                point_labels = np.concatenate((np.array([l]), np.array(zero_list)), axis=0)
+
+                # print('point_coords:', point_coords)
+                # print('point_labels:', point_labels)
+
+                _, scores, logits = self.predictor.predict(
+                    point_coords=point_coords,
+                    point_labels=point_labels,
                     multimask_output=True,
                 )
-                
-                mask_input = logits[0, :, :]  # Choose the model's best mask
-                mask, _, _ = self.predictor.predict(
-                    point_coords=np.array([p]),
-                    point_labels=np.array([l]),
+
+                # mask_input = logits[np.arg, :, :]  # Choose the model's best mask
+                mask_input = logits[0, :, :]  # Choose the mask with the highest score
+                mask, scores, logits = self.predictor.predict(
+                    point_coords=point_coords,
+                    point_labels=point_labels,
                     mask_input=mask_input[None, :, :],
-                    multimask_output=True,
+                    multimask_output=False,
                 )
 
                 segment_counter += 1
@@ -1354,23 +1240,29 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
 
             # Save label images for SAM and Mixed approaches
             mask_dir_sam = os.path.join(output_dir, 'labels_sam')
+            mask_dir_spx = os.path.join(output_dir, 'labels_spx')
             mask_dir_mix = os.path.join(output_dir, 'labels_mix')
             os.makedirs(mask_dir_sam, exist_ok=True)
+            os.makedirs(mask_dir_spx, exist_ok=True)
             os.makedirs(mask_dir_mix, exist_ok=True)
 
             # Initialize the masks with the background value
             mask_sam = np.full((image.shape[0], image.shape[1]), background_gray, dtype=np.uint8)
+            mask_spx = np.full((image.shape[0], image.shape[1]), background_gray, dtype=np.uint8)
             mask_mix = np.full((image.shape[0], image.shape[1]), background_gray, dtype=np.uint8)
 
             for l, l_str in zip(unique_labels_i, unique_labels_str_i):
                 expanded_i_sam = expanded_sam[expanded_sam['Label'] == l].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
+                expanded_i_spx = expanded_spx[expanded_spx['Label'] == l].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
                 expanded_i_mix = output_df[output_df['Label'] == l].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
                 label = list(color_dict.keys()).index(l_str)
                 mask_sam[expanded_i_sam[:, 0], expanded_i_sam[:, 1]] = label
+                mask_spx[expanded_i_spx[:, 0], expanded_i_spx[:, 1]] = label
                 mask_mix[expanded_i_mix[:, 0], expanded_i_mix[:, 1]] = label
 
             # Save grayscale masks as PNG
             cv2.imwrite(os.path.join(mask_dir_sam, os.path.splitext(image_name)[0] + '.png'), mask_sam)
+            cv2.imwrite(os.path.join(mask_dir_spx, os.path.splitext(image_name)[0] + '.png'), mask_spx)
             cv2.imwrite(os.path.join(mask_dir_mix, os.path.splitext(image_name)[0] + '.png'), mask_mix)
 
         # Update progress bar
@@ -1388,7 +1280,10 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
             for i, label in enumerate(unique_labels_i, start=0):
                 expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
                 color = np.array(color_dict[str(label)])
-                gray = np.clip(i, 0, 255).astype(np.uint8)
+                if isinstance(label, str):
+                    gray = list(color_dict.keys()).index(label)
+                else:
+                    gray = np.clip(i, 0, 255).astype(np.uint8)
                 mask[expanded_i[:, 0], expanded_i[:, 1]] = gray
                 color_mask[expanded_i[:, 0], expanded_i[:, 1]] = color
 
@@ -1401,8 +1296,11 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
 
         for label in unique_labels_i:
             expanded_i = output_df[output_df['Label'] == label].iloc[:, 1:3].to_numpy().astype(int) + BORDER_SIZE
-            label = np.clip(label, 0, 255).astype(np.uint8)
-            mask[expanded_i[:, 0], expanded_i[:, 1]] = label
+            if isinstance(label, str):
+                gray = list(color_dict.keys()).index(label)
+            else:
+                gray = np.clip(i, 0, 255).astype(np.uint8)
+            mask[expanded_i[:, 0], expanded_i[:, 1]] = gray
 
         # Save grayscale mask as PNG
         cv2.imwrite(os.path.join(mask_dir, os.path.splitext(image_name)[0] + '.png'), mask)
