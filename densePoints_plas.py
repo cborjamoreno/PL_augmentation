@@ -1097,7 +1097,6 @@ class SuperpixelLabelExpander(LabelExpander):
         image_width = image.shape[1]
         image_height = image.shape[0]
         num_classes = NUM_CLASSES
-        ensemble = False
 
         # Iterate through the keys of color_dict to find the index of background_class
         for idx, key in enumerate(color_dict.keys()):
@@ -1149,6 +1148,7 @@ parser.add_argument("--gt_images_colored", help="Directory containing the ground
 
 parser.add_argument("-b", "--background_class", help="background class value (for grayscale, provide an integer; for color, provide a tuple)", required=True, default=0)
 parser.add_argument("-n", "--num_classes", help="Number of classes in the dataset", required=True, type=int, default=35)
+parser.add_argument('--ensemble', action='store_true', dest='ensemble', help='use this flag when you would like to use an ensemble of 3 classifiers, otherwise the default is to use a single classifier')
 args = parser.parse_args()
 
 remove_far_points = False
@@ -1162,6 +1162,8 @@ output_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label"])
 
 if args.generate_csv:
     generate_csv = True
+
+ensemble = args.ensemble
 
 image_path = args.input_dir
 print("Image directory:", image_path)
@@ -1487,8 +1489,6 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
             cv2.imwrite(os.path.join(mask_dir_spx, os.path.splitext(image_name)[0] + '.png'), mask_spx)
             cv2.imwrite(os.path.join(mask_dir_mix, os.path.splitext(image_name)[0] + '.png'), mask_mix)
 
-        # Update progress bar
-        pbar.update(1)
 
         # Initialize the mask with the background value
         mask = np.full((image.shape[0], image.shape[1]), background_gray, dtype=np.uint8)
@@ -1529,6 +1529,9 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
 
         if generate_csv:
             LabelExpander.generate_csv()
+        
+        # Update progress bar
+        pbar.update(1)
 
 # Calculate mean and standard deviation for SAM and Superpixels
 if sam_times:
