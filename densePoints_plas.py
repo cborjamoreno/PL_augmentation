@@ -1,38 +1,31 @@
 
 import argparse
-import random
 import shutil
-from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 import sys, os
 import pandas as pd
-import colorsys
-from sklearn.cluster import KMeans
 from scipy.spatial.distance import cdist
 from abc import ABC, abstractmethod
-from sklearn.neighbors import KernelDensity
 import time
-import subprocess
-import multiprocessing as mp
-from sklearn.cluster import KMeans
-from shapely.geometry import Polygon
-from shapely.validation import make_valid
 import torch
 import torchvision
 from tqdm import tqdm
-from scipy.ndimage import gaussian_filter, label
-from scipy.spatial import KDTree
+from scipy.ndimage import label
+from shapely.validation import make_valid
+import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image
+from torchvision import transforms
+from skimage.segmentation._slic import _enforce_label_connectivity_cython
 
 from ML_Superpixels.generate_augmented_GT.generate_augmented_GT import generate_augmented_GT
 
-# os.environ['TORCH_CUDNN_SDPA_ENABLED'] = '1'
-# print(f"TORCH_CUDNN_SDPA_ENABLED: {os.environ['TORCH_CUDNN_SDPA_ENABLED']}")
-
 BORDER_SIZE = 0
-MAX_DISTANCE = 100
 
 def get_key(val, dict):
    
@@ -455,178 +448,6 @@ def generate_image_per_class(image_df, image, points, labels, color_dict, image_
     plt.savefig(output_dir + image_name + '_' + label_str + '_expanded.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close()
 
-def generate_image_per_segment(image_df, segment, image, points, labels, color_dict, image_name, output_dir, label_str):
-    
-    # Create a black image
-    black = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
-    black = image.copy()
-    black = black.astype(float) / 255
-    black = np.dstack((black, np.ones((black.shape[0], black.shape[1])))) # RGBA
-
-    height, width, _ = black.shape
-    dpi = 100  # Change this to adjust the quality of the output image
-    figsize = width / dpi, height / dpi
-
-    if output_dir[-1] != '/':
-        output_dir += '/'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    # Color the points in the image
-    for _, row in image_df.iterrows():
-        if row['Column'] < black.shape[1] and row['Row'] < black.shape[0]:
-            point = (row['Row'] + BORDER_SIZE, row['Column'] + BORDER_SIZE)
-
-            # Get the color and add an alpha channel
-            color = np.array([color_dict[row['Label']][0] / 255.0, color_dict[row['Label']][1] / 255.0, color_dict[row['Label']][2] / 255.0, 1])
-            blend_translucent_color(black, point[0], point[1], color, color[3])
-
-    plt.figure(figsize=figsize, dpi=dpi)
-    plt.imshow(black)
-    show_points(points, labels, plt.gca(), marker_color='black', edge_color='yellow')
-    plt.axis('off')
-
-    plt.savefig(f"{output_dir}{image_name}_segment_{segment}.png", dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.close()
-
-def generate_distinct_colors(n, threshold=50):
-
-    # Generate a large number of random colors
-    colors = np.random.randint(0, 256, size=(n*100, 3))
-
-    # Use the k-means algorithm to partition the colors into n clusters
-    kmeans = KMeans(n_clusters=n, random_state=0).fit(colors)
-
-    # Use the centroid of each cluster as a distinct color
-    distinct_colors = kmeans.cluster_centers_.astype(int)
-
-    return distinct_colors
-
-def adjust_colors(colors, n_clusters=15):
-    # Fit the k-means algorithm to the colors
-    kmeans = KMeans(n_clusters=n_clusters, random_state=0).fit(colors)
-
-    # Replace each color with the centroid of its cluster
-    adjusted_colors = kmeans.cluster_centers_[kmeans.labels_]
-
-    return adjusted_colors.astype(int)
-
-def export_colors(color_dict, output_dir):
-    # Export the color_dict to a file
-    color_dict_df = pd.DataFrame(color_dict)
-    color_dict_df.to_csv(output_dir + 'generated_color_dict.csv', index=False, header=True)
-
-def create_color_dict(labels, output_dir, n_clusters=15):
-    # Generate a set of distinct colors
-    distinct_colors = generate_distinct_colors(len(labels))
-    distinct_colors = adjust_colors(distinct_colors, n_clusters=n_clusters)
-    
-    # Prepare the color dictionary for export
-    color_dict = {}
-    for label, color in zip(labels, distinct_colors):
-        color_dict[label] = color
-    
-    # Export the color dictionary
-    export_colors(color_dict, output_dir)
-
-    return color_dict
-
-def plot_mosaic(image, image_labels, results_path):
-    num_images = len(os.listdir(results_path))
-
-    # Get the files in the results directory
-    results = os.listdir(results_path)
-    aux = []
-
-    # Short results keeping the same order of the labels
-    for label in image_labels:
-        for result in results:
-            if label in result:
-                # Move the result to the front
-                aux.append(result)
-                results.remove(result)
-                break
-
-    results = aux
-    
-    # Specify the number of rows and columns
-    num_rows = 3
-    num_cols = (num_images + 1) // num_rows + ((num_images + 1) % num_rows > 0)
-
-    # Calculate the aspect ratio of the images
-    aspect_ratio = image.shape[1] / image.shape[0]
-
-    # Calculate the size of the subplots
-    fig_width = 25
-    subplot_width = fig_width / num_cols
-    subplot_height = subplot_width / aspect_ratio
-
-    # Create a figure with a grid of subplots with the correct aspect ratio
-    fig, axes = plt.subplots(num_rows, num_cols, figsize=(fig_width, subplot_height * num_rows))
-
-    # Plot the original image
-    image_RGB = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    axes[0][0].imshow(image_RGB, aspect='auto')
-    axes[0][0].axis('off')
-
-    # Plot the images with the labels
-    for i in range(1, num_images):
-        cv2_image = cv2.imread(results_path + results[i-1])
-        cv2_image = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
-        
-        row = i // num_cols
-        col = i % num_cols
-        axes[row, col].imshow(cv2_image, aspect='auto')
-        
-        # Remove the axis
-        axes[row, col].axis('off')
-
-    # Remove the empty subplots
-    for i in range(num_images, num_rows * num_cols):
-        row = i // num_cols
-        col = i % num_cols
-        fig.delaxes(axes[row, col])
-    
-    plt.subplots_adjust(wspace=0, hspace=0, left=0, right=1, bottom=0.05, top=1)
-
-    # Create a list of patches for the legend
-    patches = []
-
-    for label in image_labels:
-        if label in color_dict:
-            color = np.array([color_dict[label][0]/255.0, color_dict[label][1]/255.0, color_dict[label][2]/255.0])
-            print('label color:', label, color)
-            patch = mpatches.Patch(color=color, label=label)
-            patches.append(patch)
-
-    # Calculate the width of the legend items
-    legend_item_width = max(len(label) for label in image_labels) * 0.01  # Approximate width of a legend item in inches
-
-    # Calculate the maximum number of columns that can fit in the figure
-    ncols = int(fig_width / legend_item_width)
-
-    # Add the legend at the bottom of the mosaic
-    legend = plt.legend(handles=patches, bbox_to_anchor=(0.6, 0), loc='upper center', ncol=ncols, borderaxespad=0.)
-
-    # Adjust the font size of the legend to fit the figure
-    plt.setp(legend.get_texts(), fontsize='small')
-
-    plt.savefig(results_path + 'mosaic.png', bbox_inches='tight', pad_inches=0)
-    plt.show()
-
-def checkMissmatchInFiles(image_names_csv, image_names_dir):
-    # Print images in .csv that are not in the image directory
-    for image_name in image_names_csv:
-        if image_name + '.jpg' not in image_names_dir:
-            print(f"Image {image_name} in .csv but not in image directory")
-
-    # Print images in the image directory that are not in the .csv
-    for image_name in image_names_dir:
-        if image_name[:-4] not in image_names_csv:
-            print(f"Image {image_name} in image directory but not in .csv")
-    
-    print("Done checking missmatch in files!\n\n")
-
 class LabelExpander(ABC):
     def __init__(self, color_dict, input_df, labels, output_df): 
         self.color_dict = color_dict
@@ -846,28 +667,18 @@ class SuperpixelLabelExpander(LabelExpander):
         super().__init__(color_dict, input_df, labels, output_df)
         self.dataset = dataset
 
-    def createSparseImage(self, points, labels, image_shape=(1000, 1000)):
-        # Create a white image with the specified shape
-        sparse_image = np.ones((image_shape[0], image_shape[1], 3), dtype=np.uint8) * 255
-        
-        for point, label in zip(points, labels):
-
-            grayscale_value = int(label)
-            # Ensure the grayscale value is within the valid range [0, 255]
-            grayscale_value = np.clip(grayscale_value, 0, 255)
-            # Set the pixel at the point's location to the grayscale value
-            sparse_image[int(point[1]), int(point[0])] = [grayscale_value, grayscale_value, grayscale_value]
-
-        return sparse_image
-
     def expand_labels(self, points, labels, unique_labels, unique_labels_str, image, image_name, background_class=None, eval_image_dir=None):
+
+        sigma_xy = 0.631
+        sigma_cnn = 0.5534
+        alpha = 1140
 
         # crop the image BORDER_SIZE pixels from each side
         cropped_image = image[BORDER_SIZE:image.shape[0]-BORDER_SIZE, BORDER_SIZE:image.shape[1]-BORDER_SIZE]
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
 
         numeric_labels = np.zeros(len(labels), dtype=int)
-        for i, label in enumerate(unique_labels, start=1):
+        for i, label in enumerate(unique_labels_str, start=1):
             numeric_labels[labels == label] = i
 
         inbound = (points[:, 0] > BORDER_SIZE) & (points[:, 0] < image.shape[0] - BORDER_SIZE) & (points[:, 1] > BORDER_SIZE) & (points[:, 1] < image.shape[1] - BORDER_SIZE)
@@ -886,52 +697,437 @@ class SuperpixelLabelExpander(LabelExpander):
         else:
             self.gt_labels = np.concatenate((self.gt_labels, _labels), axis=0)
 
-        _points[:, 0] -= BORDER_SIZE
-        _points[:, 1] -= BORDER_SIZE
-
         filename = image_name.split('.')[0]
         filename = filename + '.png'
+
+
+        def members_from_clusters(sigma_val_xy, sigma_val_cnn, XY_features, CNN_features, clusters):
+            B, K, _ = clusters.shape
+            sigma_array_xy = torch.full((B, K), sigma_val_xy, device=device)
+            sigma_array_cnn = torch.full((B, K), sigma_val_cnn, device=device)
+            
+            clusters_xy = clusters[:,:,0:2]
+            dist_sq_xy = torch.cdist(XY_features, clusters_xy)**2
+
+            clusters_cnn = clusters[:,:,2:]
+            dist_sq_cnn = torch.cdist(CNN_features, clusters_cnn)**2
+
+            soft_memberships = F.softmax( (- dist_sq_xy / (2.0 * sigma_array_xy**2)) + (- dist_sq_cnn / (2.0 * sigma_array_cnn**2)) , dim = 2)                # shape = [B, N, K] 
+            
+            return soft_memberships
+
+        def enforce_connectivity(hard, H, W, K_max, connectivity = True):
+            # INPUTS
+            # 1. posteriors:    shape = [B, N, K]
+            B = 1
+
+            hard_assoc = torch.unsqueeze(hard, 0).detach().cpu().numpy()                                 # shape = [B, N]
+            hard_assoc_hw = hard_assoc.reshape((B, H, W))    
+
+            segment_size = (H * W) / (int(K_max) * 1.0)
+
+            min_size = int(0.06 * segment_size)
+            max_size = int(H*W*10)
+
+            hard_assoc_hw = hard_assoc.reshape((B, H, W))
+            
+            for b in range(hard_assoc.shape[0]):
+                if connectivity:
+                    spix_index_connect = _enforce_label_connectivity_cython(hard_assoc_hw[None, b, :, :], min_size, max_size, 0)[0]
+                else:
+                    spix_index_connect = hard_assoc_hw[b,:,:]
+
+            return spix_index_connect
+
+        class CustomLoss(nn.Module):
+            def __init__(self, clusters_init, N, XY_features, CNN_features, features_cat, labels, sigma_val_xy = 0.5, sigma_val_cnn = 0.5, alpha = 1, num_pixels_used = 1000):
+                super(CustomLoss, self).__init__()
+                self.alpha = alpha # Weighting for the distortion loss
+                self.clusters=nn.Parameter(clusters_init, requires_grad=True)   # clusters (torch.FloatTensor: shape = [B, K, C])
+                B, K, _ = self.clusters.shape
+
+                self.N = N
+
+                self.sigma_val_xy = sigma_val_xy
+                self.sigma_val_cnn = sigma_val_cnn
+
+                self.sigma_array_xy = torch.full((B, K), self.sigma_val_xy, device=device)
+                self.sigma_array_cnn = torch.full((B, K), self.sigma_val_cnn, device=device)
+
+                self.XY_features = XY_features
+                self.CNN_features = CNN_features
+                self.features_cat = features_cat
+
+                self.labels = labels
+                self.num_pixels_used = num_pixels_used
+
+            def forward(self):
+                # computes the distortion loss of the superpixels and also our novel conflict loss
+                #
+                # INPUTS:
+                # 1) features:      (torch.FloatTensor: shape = [B, N, C]) defines for each image the set of pixel features
+
+                # B is the batch dimension
+                # N is the number of pixels
+                # K is the number of superpixels
+
+                # RETURNS:
+                # 1) sum of distortion loss and conflict loss scaled by alpha (we use lambda in the paper but this means something else when coding)
+                indexes = torch.randperm(self.N)[:self.num_pixels_used]
+
+                ##################################### DISTORTION LOSS #################################################
+                # Calculate the distance between pixels and superpixel centres by expanding our equation: (a-b)^2 = a^2-2ab+b^2 
+                features_cat_select = self.features_cat[:,indexes,:]
+                dist_sq_cat = torch.cdist(features_cat_select, self.clusters)**2
+
+                # XY COMPONENT
+                clusters_xy = self.clusters[:,:,0:2]
+
+                XY_features_select = self.XY_features[:,indexes,:]
+                dist_sq_xy = torch.cdist(XY_features_select, clusters_xy)**2
+
+                # CNN COMPONENT
+                clusters_cnn = self.clusters[:,:,2:]
+
+                CNN_features_select = self.CNN_features[:,indexes,:]
+                dist_sq_cnn = torch.cdist(CNN_features_select, clusters_cnn)**2
+
+                B, K, _ = self.clusters.shape
+                
+                soft_memberships = F.softmax( (- dist_sq_xy / (2.0 * self.sigma_array_xy**2)) + (- dist_sq_cnn / (2.0 * self.sigma_array_cnn**2)) , dim = 2)                # shape = [B, N, K]  
+
+                # The distances are weighted by the soft memberships
+                dist_sq_weighted = soft_memberships * dist_sq_cat                                           # shape = [B, N, K] 
+
+                distortion_loss = torch.mean(dist_sq_weighted)                                          # shape = [1]
+
+                ###################################### CONFLICT LOSS ###################################################
+                # print("labels", labels.shape)                                                         # shape = [B, 1, H, W]
+                
+                labels_reshape = self.labels.permute(0,2,3,1).float()                                   # shape = [B, H, W, 1]   
+
+                # Find the indexes of the class labels larger than 0 (0 is means unknown class)
+                label_locations = torch.gt(labels_reshape, 0).float()                                   # shape = [B, H, W, 1]
+                label_locations_flat = torch.flatten(label_locations, start_dim=1, end_dim=2)           # shape = [B, N, 1]  
+
+                XY_features_label = (self.XY_features * label_locations_flat)[0]                        # shape = [N, 2]
+                non_zero_indexes = torch.abs(XY_features_label).sum(dim=1) > 0                          # shape = [N] 
+                XY_features_label_filtered = XY_features_label[non_zero_indexes].unsqueeze(0)           # shape = [1, N_labelled, 2]
+                dist_sq_xy = torch.cdist(XY_features_label_filtered, clusters_xy)**2                    # shape = [1, N_labelled, K]
+
+                CNN_features_label = (self.CNN_features * label_locations_flat)[0]                      # shape = [N, 15]
+                CNN_features_label_filtered = CNN_features_label[non_zero_indexes].unsqueeze(0)         # shape = [1, N_labelled, 15]
+                dist_sq_cnn = torch.cdist(CNN_features_label_filtered, clusters_cnn)**2                 # shape = [1, N_labelled, K]
+
+                soft_memberships = F.softmax( (- dist_sq_xy / (2.0 * self.sigma_array_xy**2)) + (- dist_sq_cnn / (2.0 * self.sigma_array_cnn**2)) , dim = 2)          # shape = [B, N_labelled, K]  
+                soft_memberships_T = torch.transpose(soft_memberships, 1, 2)                            # shape = [1, K, N_labelled]
+
+                labels_flatten = torch.flatten(labels_reshape, start_dim=1, end_dim=2)[0]               # shape = [N, 1]
+                labels_filtered = labels_flatten[non_zero_indexes].unsqueeze(0)                         # shape = [1, N_labelled, 1] 
+
+                # Use batched matrix multiplication to find the inner product between all of the pixels 
+                innerproducts = torch.bmm(soft_memberships, soft_memberships_T)                         # shape = [1, N_labelled, N_labelled]
+
+                # Create an array of 0's and 1's based on whether the class of both the pixels are equal or not
+                # If they are the the same class, then we want a 0 because we don't want to add to the loss
+                # If the two pixels are not the same class, then we want a 1 because we want to penalise this
+                check_conflicts_binary = (~torch.eq(labels_filtered, torch.transpose(labels_filtered, 1, 2))).float()      # shape = [1, N_labelled, N_labelled]
+
+                # Multiply these ones and zeros with the innerproduct array
+                # Only innerproducts for pixels with conflicting labels will remain
+                conflicting_innerproducts = torch.mul(innerproducts, check_conflicts_binary)           # shape = [1, N_labelled, N_labelled]
+
+                # Find average of the remaining values for the innerproducts 
+                # If we are using batches, then we add this value to our previous stored value for the points loss
+                conflict_loss = torch.mean(conflicting_innerproducts)                                # shape = [1]
+
+                return distortion_loss + self.alpha*conflict_loss, distortion_loss, self.alpha*conflict_loss
         
-        sparseImage = self.createSparseImage(_points, _labels, cropped_image.shape)
+        def optimize_spix(criterion, optimizer, scheduler, norm_val_x, norm_val_y, num_iterations=1000):
+            
+            best_clusters = criterion.clusters
+            prev_loss = float("inf")
 
-        # Delete existing dataset with the same name in ML_Superpixels/Datasets
-        if os.path.exists("ML_Superpixels/Datasets/"+self.dataset):
-            shutil.rmtree("ML_Superpixels/Datasets/"+self.dataset)
+            for i in range(1,num_iterations):
+                loss, distortion_loss, conflict_loss = criterion()
 
-        new_filename_path = "ML_Superpixels/Datasets/"+self.dataset + "/sparse_GT/train/"
-        if not os.path.exists(new_filename_path):
-            os.makedirs(new_filename_path)
-        new_filename = new_filename_path + filename
+                # Every ten steps we clamp the X and Y locations of the superpixel centres to within the bounds of the image
+                if i % 10 == 0:
+                    with torch.no_grad():
+                        clusters_x_temp = torch.unsqueeze(torch.clamp(criterion.clusters[0,:,0], 0, ((image_width-1)*norm_val_x)), dim=1)
+                        clusters_y_temp = torch.unsqueeze(torch.clamp(criterion.clusters[0,:,1], 0, ((image_height-1)*norm_val_y)), dim=1)
+                        clusters_temp = torch.unsqueeze(torch.cat((clusters_x_temp, clusters_y_temp, criterion.clusters[0,:,2:]), dim=1), dim=0)
+                    criterion.clusters.data.fill_(0)
+                    criterion.clusters.data += clusters_temp 
 
-        # Create a new dataset for the images used
-        os.makedirs("ML_Superpixels/Datasets/"+self.dataset+"/images/train")
-        cv2.imwrite("ML_Superpixels/Datasets/"+self.dataset+"/images/train/"+filename, cropped_image)
+                if loss < prev_loss:
+                    best_clusters = criterion.clusters
+                    prev_loss = loss.item()
 
-        # Save the image
-        cv2.imwrite(new_filename, sparseImage)
+                loss.backward(retain_graph=True)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step(loss)
 
-        generate_augmented_GT(filename,"ML_Superpixels/Datasets/"+self.dataset, default_value=255, number_levels=15, start_n_superpixels=3000, last_n_superpixels=30)
+                for param_group in optimizer.param_groups:
+                    curr_lr = param_group['lr']
 
-        # print("Superpixel expansion done")
+                if curr_lr < 0.001:
+                    break
 
-        # Load the expanded image in grayscale
-        expanded_image = cv2.imread("ML_Superpixels/Datasets/"+self.dataset+ "/augmented_GT/train/" + filename, cv2.IMREAD_GRAYSCALE)
-        expanded_image[expanded_image == 255] = 0
+            return best_clusters
+        
+        def prop_to_unlabelled_spix_feat(sparse_labels, connected, features_cnn, H, W):
+            # Detach and prepare CNN features
+            features_cnn = features_cnn.detach().cpu().numpy()[0]  # shape = [N, C]
+            features_cnn_reshape = np.reshape(features_cnn, (H, W, features_cnn.shape[1]))  # shape = [H, W, C]
 
-        _points[:, 0] += BORDER_SIZE
-        _points[:, 1] += BORDER_SIZE
+            # Calculate unique superpixels and initialize feature array
+            unique_spix = np.unique(connected)
+            spix_features = np.zeros((len(unique_spix), features_cnn.shape[1] + 1))
+
+            # Calculate average features for each superpixel
+            for i, spix in enumerate(unique_spix):
+                r, c = np.where(connected == spix)
+                features_curr_spix = features_cnn_reshape[r, c]
+                spix_features[i, 0] = spix  # store spix index
+                spix_features[i, 1:] = np.mean(features_curr_spix, axis=0)  # store average feature vector
+
+            # Label array for all labeled pixels
+            mask_np = np.array(sparse_labels).squeeze()
+            labelled_indices = np.argwhere(mask_np > 0)
+            labels = [
+                [mask_np[y, x] - 1, connected[y, x], y, x] 
+                for y, x in labelled_indices
+            ]
+            labels_array = np.array(labels)  # shape = [num_points, 4]
+
+            # Calculate labels for each superpixel with points in it
+            spix_labels = []
+            for spix in unique_spix:
+                if spix in labels_array[:, 1]:
+                    label_indices = np.where(labels_array[:, 1] == spix)[0]
+                    labels = labels_array[label_indices, 0]
+                    most_common = np.bincount(labels).argmax()
+                    spix_features_row = spix_features[unique_spix == spix, 1:].flatten()
+                    spix_labels.append([spix, most_common] + list(spix_features_row))
+            
+            spix_labels = np.array(spix_labels)
+
+            # Prepare empty mask and propagate labels
+            prop_mask = np.full((H, W), np.nan)
+
+            for i, spix in enumerate(unique_spix):
+                r, c = np.where(connected == spix)
+                
+                # If already labeled, use label from spix_labels
+                if spix in spix_labels[:, 0]:
+                    label = spix_labels[spix_labels[:, 0] == spix, 1][0]
+                    prop_mask[r, c] = label
+                else:
+                    # Find the nearest labeled superpixel by features
+                    labeled_spix_features = spix_labels[:, 2:]
+                    one_spix_features = spix_features[i, 1:]
+                    distances = np.linalg.norm(labeled_spix_features - one_spix_features, axis=1)
+                    nearest_spix_idx = np.argmin(distances)
+                    nearest_label = spix_labels[nearest_spix_idx, 1]
+                    prop_mask[r, c] = nearest_label
+
+            return prop_mask
+
+        def generate_segmented_image(read_im, read_gt, image_name, num_labels, image_height, image_width, num_classes, unlabeled, sparse_gt=None, ensemble=False, points=False):
+            # Load necessary modules and functions
+            from spixel_utils import xylab, find_mean_std, img2lab, ToTensor, compute_init_spixel_feat, get_spixel_init
+            from ssn import CNN
+            from torch.optim import Adam, lr_scheduler
+
+            # Initialize variables
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            k = 100
+            norm_val_x = 10 / image_width
+            norm_val_y = 10 / image_height
+            learning_rate = 0.1
+            num_iterations = 50
+            num_pixels_used = 3000
+
+            # Load sparse ground truth if provided
+            if sparse_gt:
+                input_df = pd.read_csv(sparse_gt)
+                sparse_coords = np.zeros((image_height, image_width), dtype=int)
+                first_image_points = input_df[input_df['Name'] == input_df['Name'].iloc[0]]
+                for _, row in first_image_points.iterrows():
+                    sparse_coords[row['Row'], row['Column']] = 1
+
+            # Load image and ground truth
+            pil_img = Image.open(os.path.join(read_im, image_name))
+            GT_pil_img = Image.open(os.path.join(read_gt, image_name))
+            image = np.array(pil_img)
+            GT_mask_np = np.array(GT_pil_img)
+            GT_mask = torch.from_numpy(GT_mask_np)
+            GT_mask_torch = np.expand_dims(GT_mask, axis=2)
+            transform = transforms.Compose([ToTensor()])
+            GT_mask_torch = transform(GT_mask_torch)
+
+            # Prepare sparse labels
+            if points == False:
+                sparse_mask = np.zeros(image_height * image_width, dtype=int)
+                if sparse_gt:
+                    sparse_mask = sparse_coords
+                else:
+                    sparse_mask[:num_labels] = 1
+                    np.random.shuffle(sparse_mask)
+                sparse_mask = np.reshape(sparse_mask, (image_height, image_width))
+                sparse_mask = np.expand_dims(sparse_mask, axis=0)
+                sparse_labels = torch.add(GT_mask_torch, 1) * sparse_mask
+                sparse_labels = torch.unsqueeze(sparse_labels, 0).to(device)
+            else:
+                sparse_labels = torch.unsqueeze(GT_mask_torch, 0).to(device)
+
+            # Standardize image
+            means, stds = find_mean_std(image)
+            image = (image - means) / stds
+            transform = transforms.Compose([img2lab(), ToTensor()])
+            img_lab = transform(image)
+            img_lab = torch.unsqueeze(img_lab, 0)
+
+            # Obtain features
+            xylab_function = xylab(1.0, norm_val_x, norm_val_y)
+            CNN_function = CNN(5, 64, 100)
+            model_dict = CNN_function.state_dict()
+            ckp_path = "standardization_C=100_step70000.pth"
+            obj = torch.load(ckp_path)
+            pretrained_dict = obj['net']
+            pretrained_dict = {key[4:]: val for key, val in pretrained_dict.items() if key[4:] in model_dict}
+            model_dict.update(pretrained_dict)
+            CNN_function.load_state_dict(pretrained_dict)
+            CNN_function.to(device)
+            CNN_function.eval()
+
+            spixel_centres = get_spixel_init(k, image_width, image_height)
+            XYLab, X, Y, Lab = xylab_function(img_lab)
+            XYLab = XYLab.to(device)
+            X = X.to(device)
+            Y = Y.to(device)
+
+            with torch.no_grad():
+                features = CNN_function(XYLab)
+            
+            # change dtype of features to float32
+            features = features.float()
+            features_magnitude_mean = torch.mean(torch.norm(features, p=2, dim=1))
+            features_rescaled = (features / features_magnitude_mean)
+            features_cat = torch.cat((X, Y, features_rescaled), dim=1)
+            XY_cat = torch.cat((X, Y), dim=1)
+            mean_init = compute_init_spixel_feat(features_cat, torch.from_numpy(spixel_centres[0].flatten()).long().to(device), k)
+            CNN_features = torch.flatten(features_rescaled, start_dim=2, end_dim=3)
+            CNN_features = torch.transpose(CNN_features, 2, 1)
+            XY_features = torch.flatten(XY_cat, start_dim=2, end_dim=3)
+            XY_features = torch.transpose(XY_features, 2, 1)
+            features_cat = torch.flatten(features_cat, start_dim=2, end_dim=3)
+            features_cat = torch.transpose(features_cat, 2, 1)
+
+            torch.backends.cudnn.benchmark = True
+
+            if ensemble:
+                sigma_xy_1, sigma_cnn_1, alpha_1 = 0.5597, 0.5539, 1500
+                sigma_xy_2, sigma_cnn_2, alpha_2 = 0.5309, 0.846, 1590
+                sigma_xy_3, sigma_cnn_3, alpha_3 = 0.631, 0.5534, 1140
+
+                criterion_1 = CustomLoss(mean_init, image_height * image_width, XY_features, CNN_features, features_cat, sparse_labels, sigma_val_xy=sigma_xy_1, sigma_val_cnn=sigma_cnn_1, alpha=alpha_1, num_pixels_used=num_pixels_used).to(device)
+                optimizer_1 = Adam(criterion_1.parameters(), lr=learning_rate)
+                scheduler_1 = lr_scheduler.ReduceLROnPlateau(optimizer_1, factor=0.1, patience=1, min_lr=0.0001)
+
+                criterion_2 = CustomLoss(mean_init, image_height * image_width, XY_features, CNN_features, features_cat, sparse_labels, sigma_val_xy=sigma_xy_2, sigma_val_cnn=sigma_cnn_2, alpha=alpha_2, num_pixels_used=num_pixels_used).to(device)
+                optimizer_2 = Adam(criterion_2.parameters(), lr=learning_rate)
+                scheduler_2 = lr_scheduler.ReduceLROnPlateau(optimizer_2, factor=0.1, patience=1, min_lr=0.0001)
+
+                criterion_3 = CustomLoss(mean_init, image_height * image_width, XY_features, CNN_features, features_cat, sparse_labels, sigma_val_xy=sigma_xy_3, sigma_val_cnn=sigma_cnn_3, alpha=alpha_3, num_pixels_used=num_pixels_used).to(device)
+                optimizer_3 = Adam(criterion_3.parameters(), lr=learning_rate)
+                scheduler_3 = lr_scheduler.ReduceLROnPlateau(optimizer_3, factor=0.1, patience=1, min_lr=0.0001)
+
+                best_clusters_1 = optimize_spix(criterion_1, optimizer_1, scheduler_1, norm_val_x=norm_val_x, norm_val_y=norm_val_y, num_iterations=num_iterations)
+                best_members_1 = members_from_clusters(sigma_xy_1, sigma_cnn_1, XY_features, CNN_features, best_clusters_1)
+
+                best_clusters_2 = optimize_spix(criterion_2, optimizer_2, scheduler_2, norm_val_x=norm_val_x, norm_val_y=norm_val_y, num_iterations=num_iterations)
+                best_members_2 = members_from_clusters(sigma_xy_2, sigma_cnn_2, XY_features, CNN_features, best_clusters_2)
+
+                best_clusters_3 = optimize_spix(criterion_3, optimizer_3, scheduler_3, norm_val_x=norm_val_x, norm_val_y=norm_val_y, num_iterations=num_iterations)
+                best_members_3 = members_from_clusters(sigma_xy_3, sigma_cnn_3, XY_features, CNN_features, best_clusters_3)
+
+                best_members_1_max = torch.squeeze(torch.argmax(best_members_1, 2))
+                best_members_2_max = torch.squeeze(torch.argmax(best_members_2, 2))
+                best_members_3_max = torch.squeeze(torch.argmax(best_members_3, 2))
+
+                connected_1 = enforce_connectivity(best_members_1_max, image_height, image_width, k, connectivity=True)
+                connected_2 = enforce_connectivity(best_members_2_max, image_height, image_width, k, connectivity=True)
+                connected_3 = enforce_connectivity(best_members_3_max, image_height, image_width, k, connectivity=True)
+
+                prop_1 = prop_to_unlabelled_spix_feat(sparse_labels.detach().cpu(), connected_1, CNN_features, image_height, image_width)
+                prop_2 = prop_to_unlabelled_spix_feat(sparse_labels.detach().cpu(), connected_2, CNN_features, image_height, image_width)
+                prop_3 = prop_to_unlabelled_spix_feat(sparse_labels.detach().cpu(), connected_3, CNN_features, image_height, image_width)
+
+                prop_1_onehot = np.eye(num_classes, dtype=np.int32)[prop_1.astype(np.int32)]
+                prop_2_onehot = np.eye(num_classes, dtype=np.int32)[prop_2.astype(np.int32)]
+                prop_3_onehot = np.eye(num_classes, dtype=np.int32)[prop_3.astype(np.int32)]
+
+                prop_count = prop_1_onehot + prop_2_onehot + prop_3_onehot
+
+                if unlabeled == 0:
+                    propagated_full = np.argmax(prop_count[:, :, 1:], axis=-1) + 1
+                    propagated_full[prop_count[:, :, 0] == 3] = 0
+                else:
+                    propagated_full = np.argmax(prop_count[:, :, :-1], axis=-1)
+                    propagated_full[prop_count[:, :, unlabeled] == 3] = unlabeled
+
+            else:
+                criterion = CustomLoss(mean_init, image_height * image_width, XY_features, CNN_features, features_cat, sparse_labels, sigma_val_xy=sigma_xy, sigma_val_cnn=sigma_cnn, alpha=alpha, num_pixels_used=num_pixels_used).to(device)
+                optimizer = Adam(criterion.parameters(), lr=learning_rate)
+                scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=1, min_lr=0.0001)
+                best_clusters = optimize_spix(criterion, optimizer, scheduler, norm_val_x=norm_val_x, norm_val_y=norm_val_y, num_iterations=num_iterations)
+                best_members = members_from_clusters(sigma_xy, sigma_cnn, XY_features, CNN_features, best_clusters)
+                connected = enforce_connectivity(torch.squeeze(torch.argmax(best_members, 2)), image_height, image_width, k, connectivity=True)
+                propagated_full = prop_to_unlabelled_spix_feat(sparse_labels.detach().cpu(), connected, CNN_features, image_height, image_width)
+
+            return propagated_full
+
+        read_im = image_dir
+        read_gt = gt_images_dir
+        image_name = filename
+        num_labels = len(points)
+        image_width = image.shape[1]
+        image_height = image.shape[0]
+        num_classes = NUM_CLASSES
+        ensemble = False
+
+        # Iterate through the keys of color_dict to find the index of background_class
+        for idx, key in enumerate(color_dict.keys()):
+            if key == background_class:
+                unlabeled = idx
+                break
+        # get index of unlabeled class in the color_dict
+
+
+        sparse_gt = args.ground_truth
+
+        expanded_image = generate_segmented_image(read_im, read_gt, image_name, num_labels, image_height, image_width, num_classes, unlabeled, sparse_gt=sparse_gt, ensemble=ensemble)
 
         # Convert the image to dataframe
         expanded_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label"])
-        for i in range(1, len(unique_labels)+1):
-            expanded_points = np.argwhere(expanded_image == i)
+        for l in unique_labels:
+            expanded_points = np.argwhere(expanded_image == l)
             data = []
+            l_str = None
+            for idx, (key, value) in enumerate(color_dict.items()):
+                if idx == l:
+                    l_str = key
+                    break
+
             for point in expanded_points:
                 data.append({
                     "Name": image_name,
                     "Row": point[0],
                     "Column": point[1],
-                    "Label": unique_labels[i-1]
+                    "Label": l
                 })
             new_data_df = pd.DataFrame(data)
             expanded_df = pd.concat([expanded_df, new_data_df], ignore_index=True)
@@ -944,13 +1140,15 @@ parser.add_argument("--output_dir", help="Directory to save the output images", 
 parser.add_argument("-gt","--ground_truth", help="CSV file containing the points and labels", required=True)
 parser.add_argument("--model", help="Model to use for prediction. If superpixel, the ML_Superpixels folder must be at the same path than this script.", default="mixed", choices=["sam", "superpixel", "mixed"])
 parser.add_argument("--dataset", help="Dataset to use for superpixel expansion", required=False)
-parser.add_argument("--max_distance", help="Maximum distance between expanded points and the seed", type=int)
 parser.add_argument("--generate_eval_images", help="Generate evaluation images for the expansion (sparse and expanded images for all the classes)", required=False, action='store_true')
 parser.add_argument("--color_dict", help="CSV file containing the color dictionary", required=False)
 parser.add_argument("--generate_csv", help="Generate a sparse csv file", required=False, action='store_true')
 parser.add_argument("--frame", help="Frame size to crop the images", required=False, type=int, default=0)
-parser.add_argument("--gt_images", help="Directory containing the ground truth images. Just for visual comparison", required=False)
+parser.add_argument("--gt_images", help="Directory containing the ground truth images.", required=False)
+parser.add_argument("--gt_images_colored", help="Directory containing the ground truth images. Just for visual comparison", required=False)
+
 parser.add_argument("-b", "--background_class", help="background class value (for grayscale, provide an integer; for color, provide a tuple)", required=True, default=0)
+parser.add_argument("-n", "--num_classes", help="Number of classes in the dataset", required=True, type=int, default=35)
 args = parser.parse_args()
 
 remove_far_points = False
@@ -965,10 +1163,6 @@ output_df = pd.DataFrame(columns=["Name", "Row", "Column", "Label"])
 if args.generate_csv:
     generate_csv = True
 
-if args.max_distance:
-    MAX_DISTANCE = args.max_distance
-    remove_far_points = True
-
 image_path = args.input_dir
 print("Image directory:", image_path)
 if not os.path.exists(image_path):
@@ -977,10 +1171,17 @@ if not os.path.exists(image_path):
 if args.frame:
     BORDER_SIZE = args.frame
 
+if args.gt_images_colored:
+    gt_images_colored_dir = args.gt_images_colored
+    if not os.path.exists(gt_images_colored_dir):
+        parser.error(f"The directory {gt_images_colored_dir} does not exist")
+
 if args.gt_images:
-    gt_images_path = args.gt_images
-    if not os.path.exists(gt_images_path):
-        parser.error(f"The directory {gt_images_path} does not exist")
+    gt_images_dir = args.gt_images
+    if not os.path.exists(gt_images_dir):
+        parser.error(f"The directory {gt_images_dir} does not exist")
+
+NUM_CLASSES = args.num_classes
 
 # Get all the images names in the input directory
 # image_names = os.listdir(image_dir)
@@ -1016,16 +1217,6 @@ if args.color_dict:
     
     # Get the labels that are in self.color_dict.keys() but not in labels
     extra_labels = set(color_dict.keys()) - set(map(str, unique_labels))
-
-    # Remove the extra labels from color_dict
-    # for label in extra_labels:
-    #     del color_dict[label]
-
-    # assert set(map(str, unique_labels)) == set(color_dict.keys()), (
-    #     'Labels in the .csv file and color_dict do not match:\n'
-    #     f'     Labels in unique_labels but not in color_dict: {set(map(str, unique_labels)) - set(color_dict.keys())}\n'
-    #     f'     Labels in color_dict but not in unique_labels: {set(color_dict.keys()) - set(map(str, unique_labels))}'
-    # )
 else:
     if generate_eval_images:
         # Ensure args.color_dict is None
@@ -1034,14 +1225,23 @@ else:
         labels = input_df['Label'].unique().tolist()
 
 if args.model == "sam" or args.model == "mixed":
-    device = "cuda"
+    torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
+
+    if torch.cuda.get_device_properties(0).major >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("PyTorch version:", torch.__version__)
     print("Torchvision version:", torchvision.__version__)
     print("CUDA is available:", torch.cuda.is_available())
-    model = sam_model_registry["vit_h"](checkpoint="vit_h.pth")
-    model.to(device)
 
-    predictor = SamPredictor(model)
+
+    sam2_checkpoint = "checkpoints/sam2.1_hiera_large.pt"
+    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+    sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=False)
+    predictor = SAM2ImagePredictor(sam2_model)
     LabelExpander_sam = SAMLabelExpander(color_dict, input_df, unique_labels, output_df, predictor, generate_eval_images)
 
 if args.model == "superpixel" or args.model == "mixed":
@@ -1066,8 +1266,6 @@ if '.' in image_path.split('/')[-1]:
 else:
     image_dir = image_path
     image_names_dir = os.listdir(image_dir)
-
-# checkMissmatchInFiles(image_names_csv, os.listdir(image_dir))
 
 def get_color_hsv(index, total_colors):
     hue = (index / total_colors) * 360  # Vary hue from 0 to 360 degrees
@@ -1134,22 +1332,22 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
             continue
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        if args.gt_images:
+        if args.gt_images_colored:
             # Get the base name of the image without extension
             base_image_name = os.path.splitext(image_name)[0]
             
             # List all files in the gt_images_path directory
-            gt_files = os.listdir(gt_images_path)
+            gt_files = os.listdir(gt_images_colored_dir)
             
             # Find the file that matches the base_image_name
             gt_image_file = next((f for f in gt_files if os.path.splitext(f)[0] == base_image_name), None)
             
             if gt_image_file:
-                gt_image_path = os.path.join(gt_images_path, gt_image_file)
+                gt_image_path = os.path.join(gt_images_colored_dir, gt_image_file)
                 gt_image = cv2.imread(gt_image_path)
                 gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2RGB)
             else:
-                print(f"ERROR: Ground truth image for {image_name} not found in {gt_images_path}")
+                print(f"ERROR: Ground truth image for {image_name} not found in {gt_images_colored_dir}")
 
         if image is None:
             print(f"ERROR: Failed to load image at {image_path}")
@@ -1221,7 +1419,7 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
                 color_mask_spx[expanded_i_spx[:, 0], expanded_i_spx[:, 1]] = color
                 color_mask_mix[expanded_i_mix[:, 0], expanded_i_mix[:, 1]] = color
 
-            if args.gt_images:
+            if args.gt_images_colored:
                 if not rgb_flag:
                     gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2GRAY)
                     gt_image_rgb = np.zeros((gt_image.shape[0], gt_image.shape[1], 3), dtype=np.uint8)
@@ -1235,10 +1433,10 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
                 axs[0].set_title("Ground Truth")
                 axs[0].axis('off')
                 axs[1].imshow(color_mask_sam)
-                axs[1].set_title("SAM")
+                axs[1].set_title("SAM2.1")
                 axs[1].axis('off')
                 axs[2].imshow(color_mask_spx)
-                axs[2].set_title("Superpixels")
+                axs[2].set_title("Point Label Aware Superpixels")
                 axs[2].axis('off')
                 axs[3].imshow(color_mask_mix)
                 axs[3].set_title("Mixed")
@@ -1249,10 +1447,10 @@ with tqdm(total=len(image_names_csv), desc="Processing images") as pbar:
                 axs[0].set_title("Original image")
                 axs[0].axis('off')
                 axs[1].imshow(color_mask_sam)
-                axs[1].set_title("SAM")
+                axs[1].set_title("SAM2.1")
                 axs[1].axis('off')
                 axs[2].imshow(color_mask_spx)
-                axs[2].set_title("Superpixels")
+                axs[2].set_title("Point Label Aware Superpixels")
                 axs[2].axis('off')
                 axs[3].imshow(color_mask_mix)
                 axs[3].set_title("Mixed")
