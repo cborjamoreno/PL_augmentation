@@ -3,19 +3,20 @@ import cv2
 import argparse
 import os
 import numpy as np
+import torch
+import torchmetrics
 from tqdm import tqdm
 
 # Define a mapping from RGB values to class labels
 class_mapping = {
-    (64, 0, 64): 0,  # Background
-    (0, 0, 0): 1,
-    (0, 0, 255): 2,
-    (0, 255, 0): 3,
-    (0, 255, 255): 4,
-    (255, 0, 0): 5,
-    (255, 0, 255): 6,
-    (255, 255, 0): 7,
-    (255, 255, 255): 8
+    (0, 0, 0): 0,
+    (0, 0, 255): 1,
+    (0, 255, 0): 2,
+    (0, 255, 255): 3,
+    (255, 0, 0): 4,
+    (255, 0, 255): 5,
+    (255, 255, 0): 6,
+    (255, 255, 255): 7
 }
 
 parser = argparse.ArgumentParser()
@@ -34,9 +35,22 @@ if not os.path.exists(gt_pth):
     print("Ground truth path does not exist")
     exit()
 
+# Metric setup
+NUM_CLASSES = len(class_mapping)  # Total number of classes, including background
+background_class = 0  # The background class
+
+pa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class)
+mpa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='macro')
+mpa_metric_per_class = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='none')
+iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='macro')
+iou_metric_per_class = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='none')
+
+# List of image files
+image_files = glob.glob(image_pth + '/*.*')
+
 def calculate_metrics(img, gt):
     # Exclude background color (64, 0, 64) from calculations
-    background_color = [64, 0, 64]
+    background_color = [0, 0, 0]
     valid_pixels_mask = ~(np.all(gt == background_color, axis=-1))
 
     # Apply mask to exclude background
@@ -50,34 +64,21 @@ def calculate_metrics(img, gt):
         gt_labels[np.all(gt_valid == rgb, axis=-1)] = label
         img_labels[np.all(img_valid == rgb, axis=-1)] = label
 
-    # Calculate per-class IoU and PA
-    unique_classes = np.unique(gt_labels)
-    if 0 in unique_classes:  # Skip background class (label 0)
-        unique_classes = unique_classes[unique_classes != 0]
+    # Convert numpy arrays to tensors for metric calculation
+    img_labels_torch = torch.tensor(img_labels, dtype=torch.int)
+    gt_labels_torch = torch.tensor(gt_labels, dtype=torch.int)
 
-    class_iou = {}
-    class_pa = []
-
-    for cls in unique_classes:
-        gt_cls = gt_labels == cls
-        img_cls = img_labels == cls
-
-        pa_cls = np.sum(gt_cls & img_cls) / np.sum(gt_cls) if np.sum(gt_cls) != 0 else 0
-        class_pa.append(pa_cls)
-
-        intersection = np.sum(gt_cls & img_cls)
-        union = np.sum(gt_cls | img_cls)
-
-        iou = intersection / union if union != 0 else 0
-        class_iou[cls] = iou
-
-    mean_pa = np.mean(class_pa) if class_pa else 0
-    return mean_pa, class_iou, class_pa
+    # Update metrics
+    pa_metric.update(img_labels_torch, gt_labels_torch)
+    mpa_metric.update(img_labels_torch, gt_labels_torch)
+    iou_metric.update(img_labels_torch, gt_labels_torch)
+    iou_metric_per_class.update(img_labels_torch, gt_labels_torch)
+    mpa_metric_per_class.update(img_labels_torch, gt_labels_torch)
 
 def process_image(filename):
     img = cv2.imread(filename)
     base_name = os.path.splitext(os.path.basename(filename))[0]
-    gt_base_name = base_name + ".bmp"
+    gt_base_name = base_name + ".png"
     gt_filename = os.path.join(gt_pth, gt_base_name)
     gt = cv2.imread(gt_filename)
 
@@ -89,52 +90,42 @@ def process_image(filename):
         print(img.shape, gt.shape)
         return None
 
-    metrics = calculate_metrics(img, gt)
-    del img
-    del gt
-    return metrics
+    calculate_metrics(img, gt)
 
 image_files = glob.glob(image_pth + '/*.*')
 
-total_pa = 0
-total_images = 0
-class_iou_aggregate = {label: [] for label in class_mapping.values() if label != 0}
-class_pa_aggregate = {label: [] for label in class_mapping.values() if label != 0}
+# Process all images sequentially
+for filename in tqdm(image_files, desc="Evaluating images"):
+    process_image(filename)
 
-with tqdm(total=len(image_files), desc="Evaluating images") as pbar:
-    for filename in image_files:
-        result = process_image(filename)
-        if result is not None:
-            pa, class_iou, class_pa = result
-            total_pa += pa
-            total_images += 1
+# Final computation of metrics
+acc = pa_metric.compute()
+m_acc = mpa_metric.compute()
+m_acc_per_class = mpa_metric_per_class.compute()
+miou = iou_metric.compute()
+miou_per_class = iou_metric_per_class.compute()
 
-            for cls, iou in class_iou.items():
-                class_iou_aggregate[cls].append(iou)
+# print(f"Per-class mPA (len {len(m_acc_per_class)}):", m_acc_per_class)
 
-            for cls, pa_cls in zip(class_iou.keys(), class_pa):
-                class_pa_aggregate[cls].append(pa_cls)
+# print(f"Per-class mIoU (len {len(miou_per_class)}):", miou_per_class)
 
-        pbar.update(1)
+# Print mIoU per class excluding background class and calculate sums
+iou_sum = 0
+acc_sum = 0
+valid_classes = 0
 
-mean_pa = total_pa / total_images if total_images > 0 else 0
+for cls in range(NUM_CLASSES):
+    if cls == background_class:
+        continue
+    class_iou = miou_per_class[cls].item()
+    class_acc = m_acc_per_class[cls].item()
+    print(f"Class {cls} mPA: {class_acc * 100:.2f}, mIoU: {class_iou * 100:.2f}")
+    iou_sum += class_iou
+    acc_sum += class_acc
+    valid_classes += 1
 
-# Calculate mean IoU per class
-mean_class_iou = {cls: np.mean(iou_list) for cls, iou_list in class_iou_aggregate.items() if iou_list}
+# Calculate and print averages
+iou_avg = iou_sum / valid_classes
+acc_avg = acc_sum / valid_classes
 
-# Calculate overall mean IoU
-mean_miou = np.mean(list(mean_class_iou.values())) if mean_class_iou else 0
-
-# Calculate mean PA per class
-mean_class_pa = {cls: np.mean(pa_list) for cls, pa_list in class_pa_aggregate.items() if pa_list}
-
-# Calculate overall mean PA (MPA)
-mean_mpa = np.mean(list(mean_class_pa.values())) if mean_class_pa else 0
-
-print(f"Mean Pixel Accuracy (PA): {mean_pa}")
-print(f"Mean Pixel Accuracy per class (MPA): {mean_mpa}")
-print(f"Mean Intersection over Union (MIoU): {mean_miou}")
-
-# Print mean IoU and PA for each class
-for cls, miou in mean_class_iou.items():
-    print(f"{cls}: {miou:.3f}")
+print("PA:", acc.item(), ", mPA:", acc_avg, ", mIOU:", iou_avg)
