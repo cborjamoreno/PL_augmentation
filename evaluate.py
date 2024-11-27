@@ -14,6 +14,7 @@ parser.add_argument("-p", "--images_pth", help="path of expanded images or a sin
 parser.add_argument("-gt", "--ground_truth_pth", help="path of ground truth images", required=True)
 parser.add_argument("-bg", "--background_class", help="background class label", default="34")
 parser.add_argument("-n", "--num_classes", help="number of classes", type=int, default=35)
+parser.add_argument("-m", "--metric_background", help="include background class in metrics", action="store_true")
 args = parser.parse_args()
 
 image_pth = args.images_pth
@@ -26,18 +27,19 @@ if not os.path.exists(image_pth) or not os.path.exists(gt_pth):
 NUM_CLASSES = args.num_classes
 background_class = int(args.background_class)
 
-# Metric setup
-# pa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class)
-# mpa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='macro')
-# mpa_metric_per_class = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='none')
-# iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class)
-# iou_metric_per_class = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='none')
-
-pa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES)
-mpa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, average='macro')
-mpa_metric_per_class = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, average='none')
-iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES)
-iou_metric_per_class = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, average='none')
+if not args.metric_background:
+    # Metric setup
+    pa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class)
+    mpa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='macro')
+    mpa_metric_per_class = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='none')
+    iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class)
+    iou_metric_per_class = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, ignore_index=background_class, average='none')
+else:
+    pa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES)
+    mpa_metric = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, average='macro')
+    mpa_metric_per_class = torchmetrics.Accuracy(task='multiclass', num_classes=NUM_CLASSES, average='none')
+    iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES)
+    iou_metric_per_class = torchmetrics.JaccardIndex(task='multiclass', num_classes=NUM_CLASSES, average='none')
 
 # List of image files
 if os.path.isdir(image_pth):

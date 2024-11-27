@@ -1,6 +1,5 @@
 
 import argparse
-import random
 import shutil
 from segment_anything import SamPredictor, SamAutomaticMaskGenerator, sam_model_registry
 import cv2
@@ -9,22 +8,15 @@ import matplotlib.patches as mpatches
 import numpy as np
 import sys, os
 import pandas as pd
-import colorsys
 from sklearn.cluster import KMeans
 from scipy.spatial.distance import cdist
 from abc import ABC, abstractmethod
-from sklearn.neighbors import KernelDensity
 import time
-import subprocess
-import multiprocessing as mp
 from sklearn.cluster import KMeans
-from shapely.geometry import Polygon
-from shapely.validation import make_valid
 import torch
 import torchvision
 from tqdm import tqdm
-from scipy.ndimage import gaussian_filter, label
-from scipy.spatial import KDTree
+from scipy.ndimage import label
 
 from ML_Superpixels.generate_augmented_GT.generate_augmented_GT import generate_augmented_GT
 
