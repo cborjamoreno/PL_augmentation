@@ -8,11 +8,13 @@ Software tool part of my master's thesis: Leveraging foundation models to improv
 We suggest using Anaconda package manager to install dependencies.
 
   1. Download Anaconda (or miniconda)
-  2. Create Anaconda environment from labelex.yml environment file:
+  2. Create Anaconda environment:
 
-  ```conda env create -f labelex.yml ```
+  ```conda env create .... ```
+  
+  4.Install ...
 
-  3. Activate the environment:
+  5. Activate the environment:
      
   ```conda activate pointlabelspix```
 
