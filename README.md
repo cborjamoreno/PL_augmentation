@@ -83,7 +83,6 @@ We suggest using Anaconda package manager to install dependencies.
 
   ```
   python label_augmentation.py -i <images_dir> -o <output_dir> -pl <point_labels_file>.csv --color_dict <color_dict_file>.csv -b <background_class> -n <num_different_classes>
-
   ```
 
 
