@@ -41,11 +41,10 @@ We suggest using Anaconda package manager to install dependencies.
   ### File Structure
 
   ```plaintext
-  project_root/
-  │── README.md                                  # This file
+  PL_augmentationn/
   │── sam2/                                      # Cloned SAM2 repository
   │   ├── ...                                    # Other SAM2 files
-  │   ├── label_augmentation.py                  # Added script
+  │   ├── label_augmentation.py                  
   │   ├── snn.py                                 # Copied from Point Label Aware Superpixels
   │   ├── spixel_utils.py                        # Copied from Point Label Aware Superpixels
   │   ├── standardization_C=100_step70000.pth    # Downloaded model weights
